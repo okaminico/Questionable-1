@@ -23,8 +23,8 @@
     "LoadPriority": 0,
     "Punchline": "自動完成任務的小助手(台服修正版，含卡住自動恢復)。",
     "AcceptsFeedback": false,
-    "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-twfix1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-twfix1/latest.zip",
-    "Changelog": "開啟並修正原本停用的「卡住時自動重新整理任務步驟」功能：移除會讓 vnavmesh 導航中狀態持續重置卡住計時器的判斷條件，改為純粹依玩家實際位置變化判斷有無進度。"
+    "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-twfix2/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-twfix2/latest.zip",
+    "Changelog": "開啟並修正原本停用的「卡住時自動重新整理任務步驟」功能：移除會讓 vnavmesh 導航中狀態持續重置卡住計時器的判斷條件，改為純粹依玩家實際位置變化判斷有無進度。介面文字（勾選框、提示、滑桿）補上繁體中文翻譯。"
   }
 ]
