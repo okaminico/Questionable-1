@@ -1,28 +1,30 @@
-{
-  "Author": "okaminico (based on ffxiv-tc-port's fork of liza/Questionable)",
-  "Name": "Questionable",
-  "InternalName": "Questionable",
-  "AssemblyVersion": "7.15.0.1",
-  "Description": "自動接取並完成任務，使用 navmesh 自動走路到任務座標並嘗試自動完成沿路的步驟(不含副本、單人任務、戰鬥)。\n\n本版本修正了「卡住時自動重新整理任務步驟」功能，讓其在 vnavmesh 反覆重新規劃路徑但走不動時也能正確偵測到卡住並自動恢復。",
-  "ApplicableVersion": "any",
-  "RepoUrl": "https://github.com/okaminico/Questionable-1",
-  "Tags": [
-    "quest",
-    "leveling",
-    "automation",
-    "navmesh"
-  ],
-  "CategoryTags": [
-    "Automation"
-  ],
-  "DalamudApiLevel": 13,
-  "LoadRequiredState": 0,
-  "LoadSync": false,
-  "CanUnloadAsync": false,
-  "LoadPriority": 0,
-  "Punchline": "自動完成任務的小助手(台服修正版，含卡住自動恢復)。",
-  "AcceptsFeedback": false,
-  "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-autosync/latest.zip",
-  "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-autosync/latest.zip",
-  "Changelog": "自動合併 ffxiv-tc-port/Questionable 上游更新（2026-09-02）。"
-}
+[
+  {
+    "Author": "okaminico (based on ffxiv-tc-port's fork of liza/Questionable)",
+    "Name": "Questionable",
+    "InternalName": "Questionable",
+    "AssemblyVersion": "7.15.0.1",
+    "Description": "自動接取並完成任務，使用 navmesh 自動走路到任務座標並嘗試自動完成沿路的步驟(不含副本、單人任務、戰鬥)。\n\n本版本修正了「卡住時自動重新整理任務步驟」功能，讓其在 vnavmesh 反覆重新規劃路徑但走不動時也能正確偵測到卡住並自動恢復。",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/okaminico/Questionable-1",
+    "Tags": [
+      "quest",
+      "leveling",
+      "automation",
+      "navmesh"
+    ],
+    "CategoryTags": [
+      "Automation"
+    ],
+    "DalamudApiLevel": 13,
+    "LoadRequiredState": 0,
+    "LoadSync": false,
+    "CanUnloadAsync": false,
+    "LoadPriority": 0,
+    "Punchline": "自動完成任務的小助手(台服修正版，含卡住自動恢復)。",
+    "AcceptsFeedback": false,
+    "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-autosync/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.1-autosync/latest.zip",
+    "Changelog": "自動合併 ffxiv-tc-port/Questionable 上游更新（2026-09-02）。"
+  }
+]
