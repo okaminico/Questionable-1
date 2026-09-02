@@ -324,7 +324,7 @@ internal sealed class GeneralConfigComponent : ConfigComponent
 
             ImGui.Spacing();
             bool autoStepRefreshEnabled = Configuration.General.AutoStepRefreshEnabled;
-            if (ImGui.Checkbox("Automatically refresh quest steps when stuck (WIP see tooltip)", ref autoStepRefreshEnabled))
+            if (ImGui.Checkbox("Automatically refresh quest steps when stuck (WIP see tooltip)".Loc(), ref autoStepRefreshEnabled))
             {
                 Configuration.General.AutoStepRefreshEnabled = autoStepRefreshEnabled;
                 Save();
@@ -340,9 +340,9 @@ internal sealed class GeneralConfigComponent : ConfigComponent
             {
                 using (ImRaii.Tooltip())
                 {
-                    ImGui.Text("Questionable will automatically refresh a quest step if it appears to be stuck after the configured delay.");
-                    ImGui.Text("This helps resume automated quest completion when interruptions occur.");
-                    ImGui.Text("WIP feature, rather than remove it, this is a warning that it isn't fully complete.");
+                    ImGui.Text("Questionable will automatically refresh a quest step if it appears to be stuck after the configured delay.".Loc());
+                    ImGui.Text("This helps resume automated quest completion when interruptions occur.".Loc());
+                    ImGui.Text("WIP feature, rather than remove it, this is a warning that it isn't fully complete.".Loc());
                 }
             }
 
@@ -351,14 +351,14 @@ internal sealed class GeneralConfigComponent : ConfigComponent
                 ImGui.Indent();
                 int autoStepRefreshDelay = Configuration.General.AutoStepRefreshDelaySeconds;
                 ImGui.SetNextItemWidth(150f);
-                if (ImGui.SliderInt("Refresh delay (seconds)", ref autoStepRefreshDelay, 30, 180))
+                if (ImGui.SliderInt("Refresh delay (seconds)".Loc(), ref autoStepRefreshDelay, 30, 180))
                 {
                     Configuration.General.AutoStepRefreshDelaySeconds = autoStepRefreshDelay;
                     Save();
                 }
 
                 ImGui.TextColored(new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1.0f),
-                    $"Quest steps will refresh automatically after {autoStepRefreshDelay} seconds if no progress is made.");
+                    "Quest steps will refresh automatically after ?? seconds if no progress is made.".Loc(autoStepRefreshDelay));
                 ImGui.Unindent();
             }
         }
