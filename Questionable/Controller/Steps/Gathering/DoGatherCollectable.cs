@@ -69,13 +69,13 @@ internal static class DoGatherCollectable
             {
                 if (gameGui.TryGetAddonByName("GatheringMasterpiece", out AtkUnitBase* atkUnitBase))
                 {
-                    atkUnitBase->FireCallbackInt(1);
+                    AddonPressGuard.PressCallbackInt("GatheringMasterpiece", atkUnitBase, 1);
                     return ETaskResult.StillRunning;
                 }
 
                 if (gameGui.TryGetAddonByName("Gathering", out atkUnitBase))
                 {
-                    atkUnitBase->FireCallbackInt(-1);
+                    AddonPressGuard.PressCallbackInt("Gathering", atkUnitBase, -1);
                     return ETaskResult.TaskComplete;
                 }
             }

@@ -63,7 +63,11 @@ internal static class TurnInDelivery
             if (remainingAllowances == 0)
             {
                 logger.LogInformation("No remaining weekly allowances");
-                addon->FireCallbackInt(0);
+                if (AddonPressGuard.TryBeginPress(addon, "0"))
+                {
+                    addon->FireCallbackInt(0);
+                }
+
                 return ETaskResult.TaskComplete;
             }
 
@@ -71,7 +75,11 @@ internal static class TurnInDelivery
                 minCollectability: (short)agentSatisfactionSupply->Items[1].Collectability1) == 0)
             {
                 logger.LogInformation("Inventory has no {ItemId}", agentSatisfactionSupply->Items[1].Id);
-                addon->FireCallbackInt(0);
+                if (AddonPressGuard.TryBeginPress(addon, "0"))
+                {
+                    addon->FireCallbackInt(0);
+                }
+
                 return ETaskResult.TaskComplete;
             }
 
@@ -82,6 +90,14 @@ internal static class TurnInDelivery
             }
 
             // try turning it in...
+            // 🔴 守衛擋下時 _remainingAllowances 不能前進:它一旦被寫成目前值，上面那個
+            // 「等到配額變少」的閘門就再也不會放行 ⇒ 這一趟交納永遠補不回來。
+            // 交納窗是多次互動窗(交完一件窗還在) ⇒ 逃生口用 15 幀，下一幀就會再來一次。
+            if (!AddonPressGuard.TryBeginPress(addon, "turnin", AddonPressGuard.RoutineRePressEscapeFrames))
+            {
+                return ETaskResult.StillRunning;
+            }
+
             logger.LogInformation("Attempting turn-in (remaining allowances: {RemainingAllowances})",
                 remainingAllowances);
             _remainingAllowances = remainingAllowances;

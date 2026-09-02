@@ -86,7 +86,7 @@ internal static class DoGather
                 {
                     if (gatheringController.HasRequestedItems())
                     {
-                        addonGathering->FireCallbackInt(-1);
+                        AddonPressGuard.PressCallbackInt("Gathering", &addonGathering->AtkUnitBase, -1);
                     }
                     else
                     {
@@ -95,7 +95,7 @@ internal static class DoGather
                         {
                             SlotInfo slot = slots.Single(x => x.ItemId == Task.Request.ItemId);
                             logger.LogDebug($"Collectible=true, clicking {slot.Index} {slot.ItemId}");
-                            addonGathering->FireCallbackInt(slot.Index);
+                            AddonPressGuard.PressCallbackInt("Gathering", &addonGathering->AtkUnitBase, slot.Index, AddonPressGuard.RoutineRePressEscapeFrames);
                         }
                         else
                         {
@@ -125,7 +125,7 @@ internal static class DoGather
                             if (_actionQueue == null)
                             {
                                 logger.LogDebug("No actions returned by GetNextActions");
-                                addonGathering->FireCallbackInt(-1);
+                                AddonPressGuard.PressCallbackInt("Gathering", &addonGathering->AtkUnitBase, -1);
                                 return ETaskResult.TaskComplete;
                             }
                             else if (_actionQueue.Count == 0)
@@ -142,11 +142,11 @@ internal static class DoGather
 
                                 if (slot != null)
                                 {
-                                    addonGathering->FireCallbackInt(slot.Index);
+                                    AddonPressGuard.PressCallbackInt("Gathering", &addonGathering->AtkUnitBase, slot.Index, AddonPressGuard.RoutineRePressEscapeFrames);
                                 }
                                 else
                                 {
-                                    addonGathering->FireCallbackInt(-1);
+                                    AddonPressGuard.PressCallbackInt("Gathering", &addonGathering->AtkUnitBase, -1);
                                 }
                             }
                         }

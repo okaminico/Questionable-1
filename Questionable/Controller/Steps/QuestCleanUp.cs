@@ -110,7 +110,7 @@ internal static class QuestCleanUp
         {
             if (gameGui.TryGetAddonByName(Task.AddonName, out AtkUnitBase* addon))
             {
-                addon->FireCallbackInt(-1);
+                AddonPressGuard.PressCallbackInt(Task.AddonName, addon, -1);
                 return true;
             }
 

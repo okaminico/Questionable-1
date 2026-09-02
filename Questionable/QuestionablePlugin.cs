@@ -62,6 +62,11 @@ public sealed class QuestionablePlugin : IDalamudPlugin
         ArgumentNullException.ThrowIfNull(pluginInterface);
         ArgumentNullException.ThrowIfNull(chatGui);
         ECommonsMain.Init(pluginInterface, this, Module.DalamudReflector);
+        // 「正在關閉中的視窗不要再按第二次」的閘門（AddonPressGuard）。
+        // 訂閱越早越好：同一個外掛內部的 Framework.Update 多播委派包在單一 try/catch 裡，
+        // 排在前面的處理常式擲例外會讓後面所有處理常式那個 tick 完全不被呼叫 ——
+        // 守衛的時鐘停住就等於逃生口永不到期。
+        AddonPressGuard.EnsureClock();
         // 讓「呼叫了對方沒有的 IPC 方法」不再完全靜默。
         // 訂閱越早越好：事件只在 IPC **呼叫**當下才被查閱，在這裡訂閱就涵蓋往後所有呼叫。
         EzIpcFailureLog.Enable();
@@ -135,6 +140,8 @@ public sealed class QuestionablePlugin : IDalamudPlugin
         finally
         {
             EzIpcFailureLog.Disable();
+            // 必須在 ECommonsMain.Dispose() 之前：之後 Svc 已經清空，拆不掉監聽器。
+            AddonPressGuard.ForceTeardown();
             ECommonsMain.Dispose();
         }
     }

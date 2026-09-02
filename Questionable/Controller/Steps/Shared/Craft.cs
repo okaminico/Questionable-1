@@ -160,7 +160,12 @@ internal static class Craft
                     AtkUnitBase* addon = AddonUtils.GetAddonById(addonId);
                     if (addon != null)
                     {
-                        addon->FireCallbackInt(-1);
+                        // 視窗名稱由實例自己讀:這條路徑只拿得到 AgentRecipeNote 的 addon id。
+                        if (AddonPressGuard.TryBeginPress(addon, "-1"))
+                        {
+                            addon->FireCallbackInt(-1);
+                        }
+
                         return ETaskResult.TaskComplete;
                     }
                 }
