@@ -121,3 +121,4 @@ jobs:
         run: |
           echo "::error::自動同步未完成（merge=${{ steps.merge.outputs.status }}, build=${{ steps.build.outputs.status }}），需要手動處理"
           exit 1
+# touched 2026-09-02T19:14:08Z to force Actions re-scan after enabling Actions on the fork

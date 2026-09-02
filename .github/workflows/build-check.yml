@@ -28,3 +28,4 @@ jobs:
           Expand-Archive -Force dalamud-pinned.zip "$env:AppData\xivlauncher\Addon\Hooks\dev\"
       - name: Build with dotnet
         run: dotnet build --configuration Release Questionable/Questionable.csproj -p:DalamudLibPath="$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\"
+# touched 2026-09-02T19:14:08Z to force Actions re-scan after enabling Actions on the fork
