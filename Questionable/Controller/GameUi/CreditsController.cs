@@ -3,6 +3,7 @@ using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Microsoft.Extensions.Logging;
+using Questionable.Utils;
 using System;
 namespace Questionable.Controller.GameUi;
 
@@ -36,7 +37,7 @@ internal sealed class CreditsController : IDisposable
     {
         _logger.LogInformation("Closing Credits sequence");
         AtkUnitBase* addon = (AtkUnitBase*)args.Addon.Address;
-        addon->FireCallbackInt(-2);
+        AddonPressGuard.PressCallbackInt("CreditScroll", addon, -2);
     }
 
     /// <summary>
@@ -46,13 +47,13 @@ internal sealed class CreditsController : IDisposable
     {
         _logger.LogInformation("Closing Credits sequence");
         AtkUnitBase* addon = (AtkUnitBase*)args.Addon.Address;
-        addon->FireCallbackInt(-2);
+        AddonPressGuard.PressCallbackInt("Credit", addon, -2);
     }
 
     private unsafe void CreditPlayerPostSetup(AddonEvent type, AddonArgs args)
     {
         _logger.LogInformation("Closing CreditPlayer");
         AtkUnitBase* addon = (AtkUnitBase*)args.Addon.Address;
-        addon->Close(true);
+        AddonPressGuard.PressClose("CreditPlayer", addon);
     }
 }

@@ -6,6 +6,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using Microsoft.Extensions.Logging;
 using Questionable.Utils;
 using System;
+using System.Globalization;
 namespace Questionable.Controller.GameUi;
 
 internal sealed class CraftworksSupplyController : IDisposable
@@ -96,6 +97,14 @@ internal sealed class CraftworksSupplyController : IDisposable
                 continue;
             }
 
+            // 多次互動窗:逐格挑選、窗不會因為被按而消失 ⇒ 逃生口用 15 幀。
+            if (!AddonPressGuard.TryBeginPress("BankaCraftworksSupply", addon,
+                    "slot:" + slot.ToString(CultureInfo.InvariantCulture),
+                    AddonPressGuard.RoutineRePressEscapeFrames))
+            {
+                return;
+            }
+
             _logger.LogInformation("Selecting an item for slot {Slot}", slot);
             AtkValue* selectSlot = stackalloc AtkValue[]
             {
@@ -109,8 +118,11 @@ internal sealed class CraftworksSupplyController : IDisposable
         // do turn-in if any item is provided
         if (atkValues[31].UInt != 0)
         {
-            _logger.LogInformation("Confirming turn-in");
-            addon->FireCallbackInt(0);
+            if (AddonPressGuard.TryBeginPress("BankaCraftworksSupply", addon, "confirm"))
+            {
+                _logger.LogInformation("Confirming turn-in");
+                addon->FireCallbackInt(0);
+            }
         }
     }
 
@@ -142,9 +154,23 @@ internal sealed class CraftworksSupplyController : IDisposable
             return;
         }
 
-        if (parentAddon->NameString is "BankaCraftworksSupply")
+        // 🔴 名稱用有界讀法：CS 產生的 NameString 是無上限的 null-terminated 掃描，
+        // 對「可能正在關閉／剛被回收」的視窗做無界讀取就是攔不到的存取違規。
+        // 而且只讀這一次 —— 底下 FireCallback + Close(true) 之後再回頭讀同一個實例，
+        // 那已經是對「可能已經被銷毀的視窗」解參考。
+        string parentName = AddonUtils.ReadAddonName(parentAddon);
+
+        if (parentName is "BankaCraftworksSupply")
         {
-            _logger.LogInformation("Picking item for {AddonName}", parentAddon->NameString);
+            // 🔴 這支掛在 PostReceiveEvent 上 —— ContextIconMenu 每收到一個事件就會進來一次。
+            // 挑選(FireCallback 5)＋關閉(Close) 是刻意的一組動作，用同一個 key 一起罩住，
+            // 免得對已經在關閉中的選單再送第二組。
+            if (!AddonPressGuard.TryBeginPress("ContextIconMenu", (AtkUnitBase*)addonContextIconMenu, "pick"))
+            {
+                return;
+            }
+
+            _logger.LogInformation("Picking item for {AddonName}", parentName);
             AtkValue* selectSlot = stackalloc AtkValue[]
             {
                 new() { Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int, Int = 0 },
@@ -153,17 +179,53 @@ internal sealed class CraftworksSupplyController : IDisposable
                 new() { Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.UInt, UInt = 0 },
                 new() { Type = 0, Int = 0 }
             };
+            // close 參數維持預設的 false —— 原生因此保證不會在這一發裡把選單收掉：
+            // AtkUnitBase::FireCallback（台服 7.20 0x1406422B0）在 0x1406423B4 test r14b, r14b
+            //（r14 ＝ 第四個參數 close，0x1406422E5 movzx r14d, r9b）之後直接 je 0x140642415，
+            // 跳過整個 Hide/Close 區塊並且 xor sil, sil ⇒ 回傳值也恆為 false，讀它沒有意義。
+            // ⚠️ 不要「順手」改成 close: true —— 那會把關窗的決定權交給 agent 的回傳值
+            //（0x1406423BD cmp byte ptr [rsp + 0x38], r12b），agent 回 0 就沒有人關窗，
+            // 交納流程會停在選單開著的狀態。
             addonContextIconMenu->FireCallback(5, selectSlot);
-            addonContextIconMenu->Close(true);
 
-            if (parentAddon->NameString == "BankaCraftworksSupply")
+            // 🔴 第二次碰同一扇窗之前，先確認上面那一發沒有把它收掉。
+            // FireCallback 會在同一個呼叫堆疊裡同步跑完 agent 的處理常式
+            //（0x1406423AD call qword ptr [rax + 8]），那段原生程式碼會不會自己收掉選單，
+            // 離線證不出來。收掉的話 IsVisible 必定已經是 false：
+            //   - AtkUnitBase::Close（0x14063CFE0）只有在 (Flags198 & 0xF00000) 已經是
+            //     0x400000／0x500000（兩者 bit21 皆為 0，＝本來就不可見）時才跳過 Hide；
+            //   - AtkUnitBase::Hide（0x140642770）是同步寫回 ——
+            //     0x1406427B5 and ecx, 0xFF4FFFFF 清掉 bit21（0x200000 ＝ IsVisible），
+            //     0x1406427D0 mov dword ptr [rbx + 0x198], ecx 當場生效。
+            // 進到這支的時候 IsVisible 是 true（開頭第一關就擋掉不可見的），
+            // 所以這裡讀到 false 只可能是這一發 callback 造成的。
+            //
+            // ⚠️ 這不是記憶體安全問題：同一個呼叫堆疊內不會跨過 AtkUnitManager::Update，
+            // 而唯一會釋放 addon 記憶體的 AddonFinalize 只從那裡（與整體 teardown）走 ——
+            // 實例必定還在，讀旗標與呼叫 Close 都不會踩到已釋放的記憶體。
+            // 擋的是行為風險：Close(true) 會走 vf54 FireCloseCallback
+            //（0x14063CFF3 test dl, dl ⇒ 0x14063CFF7 call qword ptr [rax + 0x1b0]），
+            // 對已經收掉的選單再送一發關窗事件，是遊戲自己從來不會做的事，
+            // agent 對這種輸入的健壯性沒有保證。
+            if (addonContextIconMenu->IsVisible)
+            {
+                addonContextIconMenu->Close(true);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "[CraftworksSupply] ContextIconMenu 在挑選 callback 的同一個呼叫堆疊裡就被收掉了" +
+                    "(IsVisible 變成 false)，跳過原本無條件送出的 Close(true)。");
+            }
+
+            if (parentName == "BankaCraftworksSupply")
             {
                 _framework.RunOnTick(InteractWithBankaCraftworksSupply, TimeSpan.FromMilliseconds(50));
             }
         }
         else
         {
-            _logger.LogTrace("Ignoring contextmenu event for {AddonName}", parentAddon->NameString);
+            _logger.LogTrace("Ignoring contextmenu event for {AddonName}", parentName);
         }
     }
 }

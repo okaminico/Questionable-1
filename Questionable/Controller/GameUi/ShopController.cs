@@ -173,7 +173,11 @@ internal sealed class ShopController : IDisposable, IShopWindow
     {
         if (_gameGuiAdapter.TryGetAddonByName("Shop", out AtkUnitBase* addonShop))
         {
-            addonShop->FireCallbackInt(-1);
+            // 🔴 FrameworkUpdate 在「沒東西要買」的分支每一幀都會走 CancelAutoPurchase() → 這裡，
+            // 而 −1 正是把商店關掉的那一發 ⇒ 沒有守衛就是每幀對正在關閉的窗再送一次。
+            // 另外 RegularShopBase.ShopPreFinalize 也會走到這裡(對已經在銷毀的窗送 callback)，
+            // 那條由守衛的 PreFinalize 記號擋掉。
+            AddonPressGuard.PressCallbackInt("Shop", addonShop, -1);
         }
     }
 

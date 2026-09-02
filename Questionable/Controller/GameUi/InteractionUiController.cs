@@ -223,7 +223,7 @@ internal sealed class InteractionUiController : IDisposable
         if (answer != null)
         {
             _logger.LogInformation("Using choice {Choice} for list prompt '{Prompt}'", answer, actualPrompt);
-            addonSelectString->AtkUnitBase.FireCallbackInt(answer.Value);
+            AddonPressGuard.PressCallbackInt("SelectString", &addonSelectString->AtkUnitBase, answer.Value);
         }
     }
 
@@ -256,7 +256,7 @@ internal sealed class InteractionUiController : IDisposable
         int? answer = HandleListChoice(actualPrompt, answers, checkAllSteps);
         if (answer != null)
         {
-            addonCutSceneSelectString->AtkUnitBase.FireCallbackInt(answer.Value);
+            AddonPressGuard.PressCallbackInt("CutSceneSelectString", &addonCutSceneSelectString->AtkUnitBase, answer.Value);
         }
     }
 
@@ -284,7 +284,7 @@ internal sealed class InteractionUiController : IDisposable
         if (answer != null)
         {
             _logger.LogInformation("Using choice {Choice} for list prompt '{Prompt}'", answer, actualPrompt);
-            addonSelectIconString->AtkUnitBase.FireCallbackInt(answer.Value);
+            AddonPressGuard.PressCallbackInt("SelectIconString", &addonSelectIconString->AtkUnitBase, answer.Value);
             return;
         }
 
@@ -332,7 +332,7 @@ internal sealed class InteractionUiController : IDisposable
         if (questSelection >= 0)
         {
             _logger.LogInformation("Selecting quest {QuestName}", questName);
-            addonSelectIconString->AtkUnitBase.FireCallbackInt(questSelection);
+            AddonPressGuard.PressCallbackInt("SelectIconString", &addonSelectIconString->AtkUnitBase, questSelection);
             return true;
         }
 
@@ -697,7 +697,7 @@ internal sealed class InteractionUiController : IDisposable
         _logger.LogTrace("Prompt: '{Prompt}'", actualPrompt);
         if (_shopController.IsAwaitingYesNo && _purchaseItemRegex.IsMatch(actualPrompt))
         {
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             _shopController.IsAwaitingYesNo = false;
             return;
         }
@@ -798,7 +798,7 @@ internal sealed class InteractionUiController : IDisposable
             if (dialogueChoice.Prompt == null && dialogueChoice.Yes)
             {
                 _logger.LogInformation("Forcing Yes because no key for this prompt is currently available.");
-                addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+                AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
                 return true;
             }
 
@@ -820,13 +820,13 @@ internal sealed class InteractionUiController : IDisposable
             }
 
             _logger.LogInformation("Returning {YesNo} for '{Prompt}'", dialogueChoice.Yes ? "Yes" : "No", actualPrompt);
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(dialogueChoice.Yes ? 0 : 1);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, dialogueChoice.Yes ? 0 : 1);
             return true;
         }
 
         if (CheckSinglePlayerDutyYesNo(quest.Id, step))
         {
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             return true;
         }
 
@@ -858,13 +858,13 @@ internal sealed class InteractionUiController : IDisposable
         if (_aetheryteFunctions.ReturnRequestedAt >= DateTime.Now.AddSeconds(-2) && _returnRegex.IsMatch(actualPrompt))
         {
             _logger.LogInformation("Automatically confirming return...");
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             return true;
         }
         if (_ticketRegex.IsMatch(actualPrompt))
         {
             _logger.LogInformation($"Check UseTickets: {_configuration.General.UseTickets}");
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(_configuration.General.UseTickets ? 0 : 1);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, _configuration.General.UseTickets ? 0 : 1);
             return true;
         }
 
@@ -873,7 +873,7 @@ internal sealed class InteractionUiController : IDisposable
 //            if (IsHqTradeAllowedInSequence(currentQuest))
 //            {
             _logger.LogInformation("Automatically confirming HQ item trade");
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             return true;
 //            }
 //            else
@@ -887,7 +887,7 @@ internal sealed class InteractionUiController : IDisposable
         if (_questController.IsRunning && _gameGui.TryGetAddonByName("HousingSelectBlock", out AtkUnitBase* _))
         {
             _logger.LogInformation("Automatically confirming ward selection");
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             return true;
         }
 
@@ -896,7 +896,7 @@ internal sealed class InteractionUiController : IDisposable
             TryFindWarp(targetTerritoryId.Value, actualPrompt, out uint? warpId, out string? warpText))
         {
             _logger.LogInformation("Using warp {Id}, {Prompt}", warpId, warpText);
-            addonSelectYesno->AtkUnitBase.FireCallbackInt(0);
+            AddonPressGuard.PressCallbackInt("SelectYesno", &addonSelectYesno->AtkUnitBase, 0);
             return true;
         }
 
@@ -944,7 +944,10 @@ internal sealed class InteractionUiController : IDisposable
                 new() { Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int, Int = 0 },
                 new() { Type = FFXIVClientStructs.FFXIV.Component.GUI.ValueType.Int, Int = _configuration.SinglePlayerDuties.RetryDifficulty }
             };
-            addonDifficultySelectYesNo->FireCallback(2, selectChoice);
+            if (AddonPressGuard.TryBeginPress("DifficultySelectYesNo", addonDifficultySelectYesNo, "confirm"))
+            {
+                addonDifficultySelectYesNo->FireCallback(2, selectChoice);
+            }
         }
     }
 
@@ -1131,6 +1134,13 @@ internal sealed class InteractionUiController : IDisposable
 
         uint choice = step.PointMenuChoices[counter];
 
+        // 🔴 被守衛擋下＝這扇 PointMenu 剛剛已經回答過(正在關閉中)，counter 不可以前進，
+        // 否則下一扇窗會少按一個選項。
+        if (!AddonPressGuard.TryBeginPress("PointMenu", addonPointMenu, "choice"))
+        {
+            return;
+        }
+
         _logger.LogInformation("Handling point menu, picking choice {Choice} (index = {Index})", choice, counter);
         AtkValue* selectChoice = stackalloc AtkValue[]
         {
@@ -1151,7 +1161,7 @@ internal sealed class InteractionUiController : IDisposable
 
         _logger.LogInformation("Confirming selected housing ward");
         AtkUnitBase* addon = (AtkUnitBase*)args.Addon.Address;
-        addon->FireCallbackInt(0);
+        AddonPressGuard.PressCallbackInt("HousingSelectBlock", addon, 0);
     }
 
     private StringOrRegex? ResolveReference(Quest? quest, string? excelSheet, ExcelRef? excelRef, bool isRegExp)

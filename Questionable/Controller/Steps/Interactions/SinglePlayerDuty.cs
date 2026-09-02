@@ -14,6 +14,7 @@ using Questionable.External;
 using Questionable.Functions;
 using Questionable.Model;
 using Questionable.Model.Questing;
+using Questionable.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -384,7 +385,10 @@ internal static class SinglePlayerDuty
         {
             if (GenericHelpers.TryGetAddonMaster(out AddonMaster.ContentsFinderConfirm m) && m.IsAddonReady)
             {
-                if (EzThrottler.Throttle("Confirm", 2000))
+                // EzThrottler 記的是「上一次動作在哪個時刻」而不是「這扇窗按過了」，
+                // 而且 key 全外掛共用、首次必放行 —— 真正擋住重按的是守衛。
+                if (EzThrottler.Throttle("Confirm", 2000) &&
+                    AddonPressGuard.TryBeginPress("ContentsFinderConfirm", m.Base, "commence"))
                 {
                     m.Commence();
                 }
