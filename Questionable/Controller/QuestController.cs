@@ -365,7 +365,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             return;
         }
 
-        //CheckAutoRefreshCondition();
+        CheckAutoRefreshCondition();
 
         UpdateCurrentTask();
     }
@@ -392,8 +392,6 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             _condition[ConditionFlag.BetweenAreas] ||
             _condition[ConditionFlag.BetweenAreas51] ||
             _gameFunctions.IsOccupied() ||
-            _movementController.IsPathfinding ||
-            _movementController.IsPathRunning ||
             !_movementController.IsNavmeshReady ||
             (_taskQueue.CurrentTaskExecutor?.CurrentTask.GetType().Namespace == typeof(WaitAtEnd).Namespace) ||
             DateTime.Now < _safeAnimationEnd)
