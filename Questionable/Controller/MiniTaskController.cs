@@ -31,6 +31,15 @@ internal abstract class MiniTaskController<T> : IDisposable
     private readonly IServiceProvider _serviceProvider;
     protected readonly TaskQueue _taskQueue = new();
 
+    /// <summary>
+    /// 連續幾次「中斷後重試」都沒有真正的進度（見 QuestController.CheckAutoRefreshCondition）。
+    /// InterruptQueueWithCombat／InterruptWithoutCombat 每插一次 WaitAtEnd.WaitDelay() 就 +1；
+    /// 偵測到真正進度時歸零。用來讓卡住偵測能看穿「每次都插同一種 WaitAtEnd 重試緩衝」的無限重試迴圈——
+    /// 這種迴圈本身一直讓 CurrentTask 落在 WaitAtEnd 命名空間裡，若排除規則沒有上限，
+    /// 卡住計時器永遠會在累積到門檻前被重置，觸發不了。
+    /// </summary>
+    protected int ConsecutiveInterruptions;
+
     protected MiniTaskController(IChatGui chatGui, ICondition condition, IServiceProvider serviceProvider,
         InterruptHandler interruptHandler, IDataManager dataManager, ILogger<T> logger)
     {
@@ -198,6 +207,7 @@ internal abstract class MiniTaskController<T> : IDisposable
     public void InterruptQueueWithCombat()
     {
         _logger.LogWarning("Interrupted, attempting to resolve (if in combat)");
+        ConsecutiveInterruptions++;
         if (_condition[ConditionFlag.InCombat])
         {
             List<ITask> tasks = [];
@@ -223,6 +233,7 @@ internal abstract class MiniTaskController<T> : IDisposable
         if (_taskQueue.CurrentTaskExecutor is not SinglePlayerDuty.WaitSinglePlayerDutyExecutor)
         {
             _logger.LogWarning("Interrupted, attempting to redo previous tasks (not in combat)");
+            ConsecutiveInterruptions++;
 
             _taskQueue.InterruptWith([new WaitAtEnd.WaitDelay()]);
             LogTasksAfterInterruption();

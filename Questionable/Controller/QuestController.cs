@@ -277,6 +277,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         _lastQuestId = null;
         _lastProgressUpdate = DateTime.Now;
         _lastAutoRefresh = DateTime.Now;
+        ConsecutiveInterruptions = 0;
     }
 
     public void Update()
@@ -393,7 +394,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             _condition[ConditionFlag.BetweenAreas51] ||
             _gameFunctions.IsOccupied() ||
             !_movementController.IsNavmeshReady ||
-            (_taskQueue.CurrentTaskExecutor?.CurrentTask.GetType().Namespace == typeof(WaitAtEnd).Namespace) ||
+            (_taskQueue.CurrentTaskExecutor?.CurrentTask.GetType().Namespace == typeof(WaitAtEnd).Namespace
+                && ConsecutiveInterruptions < 3) ||
             DateTime.Now < _safeAnimationEnd)
         {
             _lastProgressUpdate = DateTime.Now;
@@ -418,6 +420,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             _lastQuestSequence = currentSequence;
             _lastQuestStep = currentStep;
             _lastProgressUpdate = DateTime.Now;
+            ConsecutiveInterruptions = 0;
         }
         else
         {
