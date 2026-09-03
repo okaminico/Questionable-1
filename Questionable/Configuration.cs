@@ -54,6 +54,7 @@ internal sealed class Configuration : IPluginConfiguration
         public bool AutoStepRefreshEnabled { get; set; }
         public int AutoStepRefreshDelaySeconds { get; set; } = 30;
         public bool TeleportToAetheryteOnRepeatedInterruption { get; set; } = true;
+        public float MovementStuckGraceSeconds { get; set; } = 2.5f;
         public bool UseTickets { get; set; }
         public bool HideSponsorButton { get; set; }
         public bool DismissedReportWarning { get; set; }

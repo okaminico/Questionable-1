@@ -383,6 +383,30 @@ internal sealed class GeneralConfigComponent : ConfigComponent
                     }
                 }
 
+                ImGui.Spacing();
+                float movementStuckGraceSeconds = Configuration.General.MovementStuckGraceSeconds;
+                ImGui.SetNextItemWidth(150f);
+                if (ImGui.DragFloat("Movement stuck grace period (seconds)".Loc(), ref movementStuckGraceSeconds, 0.1f, 1f, 8f, "%.1f"))
+                {
+                    Configuration.General.MovementStuckGraceSeconds = movementStuckGraceSeconds;
+                    Save();
+                }
+
+                ImGui.SameLine();
+                using (ImRaii.PushFont(UiBuilder.IconFont))
+                {
+                    ImGui.TextDisabled(FontAwesomeIcon.InfoCircle.ToIconString());
+                }
+
+                if (ImGui.IsItemHovered())
+                {
+                    using (ImRaii.Tooltip())
+                    {
+                        ImGui.Text("How long the character can move (running-in-place / stuck against geometry, near-zero actual displacement) before Questionable tries something else - jumping, or recalculating the route from the current position. This is separate from the 'stuck quest step' settings above; it reacts within seconds, not the delay set there.".Loc());
+                        ImGui.Text("Lower = looks less suspicious standing/running in place, but reacts to brief, harmless hitches too - can cause more frequent route recalculations. Default 2.5s.".Loc());
+                    }
+                }
+
                 ImGui.Unindent();
             }
         }

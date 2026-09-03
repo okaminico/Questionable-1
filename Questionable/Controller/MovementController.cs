@@ -38,6 +38,7 @@ internal sealed class MovementController
     AetheryteData aetheryteData,
     ICommandManager commandManager,
     IServiceProvider serviceProvider,
+    Configuration configuration,
     ILogger<MovementController> logger) : IDisposable
 {
     public ICommandManager CommandManager { get; } = commandManager;
@@ -387,7 +388,7 @@ internal sealed class MovementController
             throw new InvalidOperationException("Destination is null");
         }
 
-        if (DateTime.Now - MovementStartedAt <= TimeSpan.FromSeconds(5))
+        if (DateTime.Now - MovementStartedAt <= TimeSpan.FromSeconds(configuration.General.MovementStuckGraceSeconds))
         {
             return false;
         }
