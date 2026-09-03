@@ -3,8 +3,8 @@
     "Author": "okaminico (based on ffxiv-tc-port's fork of liza/Questionable)",
     "Name": "Questionable",
     "InternalName": "Questionable",
-    "AssemblyVersion": "7.15.0.4",
-    "Description": "自動接取並完成任務，使用 navmesh 自動走路到任務座標並嘗試自動完成沿路的步驟(不含副本、單人任務、戰鬥)。\n\n本版本修正了「卡住時自動重新整理任務步驟」功能，並新增「連續中斷重試 3 次後主動傳送到最近的大水晶」功能，比被動等待更快恢復。",
+    "AssemblyVersion": "7.15.0.5",
+    "Description": "自動接取並完成任務，使用 navmesh 自動走路到任務座標並嘗試自動完成沿路的步驟(不含副本、單人任務、戰鬥)。\n\n本版本修正了「卡住時自動重新整理任務步驟」功能，新增「連續中斷重試 3 次後主動傳送到最近的大水晶」，並把移動卡住的反應時間從寫死 5 秒改成可調、預設 2.5 秒，避免長時間原地跑步被看到。",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/okaminico/Questionable-1",
     "Tags": [
@@ -23,8 +23,8 @@
     "LoadPriority": 0,
     "Punchline": "自動完成任務的小助手(台服修正版，含卡住自動恢復)。",
     "AcceptsFeedback": false,
-    "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.4-twfix4/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.4-twfix4/latest.zip",
-    "Changelog": "新增「連續中斷重試 3 次後傳送到最近的大水晶」功能（一般設定，預設開啟），比被動的卡住自動重整更快恢復。"
+    "DownloadLinkInstall": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.5-twfix5/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/okaminico/Questionable-1/releases/download/Questionable-v7.15.0.5-twfix5/latest.zip",
+    "Changelog": "新增「移動卡住緩衝秒數」設定（1~8 秒，預設 2.5 秒，原本寫死 5 秒），角色原地跑步卡住時更快切換路線，避免長時間停在原地被其他玩家看到。"
   }
 ]
