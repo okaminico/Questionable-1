@@ -17,6 +17,8 @@ using Questionable.Data;
 using Questionable.External;
 using Questionable.Functions;
 using Questionable.Model;
+using Questionable.Model.Common;
+using Questionable.Model.Common.Converter;
 using Questionable.Model.Questing;
 using Questionable.Windows.ConfigComponents;
 using System;
@@ -51,6 +53,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     }
 
     private const char ClipboardSeparator = ';';
+    private readonly AetheryteData _aetheryteData;
+    private readonly AetheryteFunctions _aetheryteFunctions;
     private readonly AlliedSocietyQuestFunctions _alliedSocietyQuestFunctions;
     private readonly IChatGui _chatGui;
     private readonly IClientState _clientState;
@@ -121,10 +125,14 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         IDataManager dataManager,
         SinglePlayerDutyConfigComponent singlePlayerDutyConfigComponent,
         AlliedSocietyQuestFunctions alliedSocietyQuestFunctions,
-        TataruPraiseIpc tataruPraiseIpc)
+        TataruPraiseIpc tataruPraiseIpc,
+        AetheryteFunctions aetheryteFunctions,
+        AetheryteData aetheryteData)
         : base(chatGui, condition, serviceProvider, interruptHandler, dataManager, logger)
     {
         _clientState = clientState;
+        _aetheryteFunctions = aetheryteFunctions;
+        _aetheryteData = aetheryteData;
         _objectTable = objectTable;
         //_playerState = playerState;
         _gameFunctions = gameFunctions;
@@ -443,6 +451,80 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                 _lastAutoRefresh = DateTime.Now;
             }
         }
+    }
+
+    /// <summary>
+    /// 連續中斷重試達到門檻（見 MiniTaskController.ConsecutiveInterruptions）時，主動傳送到目前所在
+    /// 區域裡最近、已解鎖的大水晶，再強制重新規劃路線——比純被動等卡住偵測（AutoStepRefresh）更快，
+    /// 也不需要使用者自己動手介入。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 只在非戰鬥時動作：遊戲本身在戰鬥中就不允許傳送（CanTeleport 會回 false），
+    /// 硬要在這裡呼叫只會靜靜失敗，不如提早跳過，記錄檔留給真正有意義的失敗原因。
+    /// <para>
+    /// 📌 找不到已解鎖的大水晶（例如角色根本還沒解鎖這個區域的任何大水晶）就什麼都不做，
+    /// 退回純被動的 AutoStepRefresh；不會因為找不到傳送點而拋例外或卡住流程。
+    /// </para>
+    /// <para>
+    /// 📌 傳送後立刻 ClearTasksInternal + Reload，跟 CheckAutoRefreshCondition 判定卡住時做的事一樣，
+    /// 強制整條路線從頭規劃。玩家實際位置要等傳送的讀取畫面結束才會真正改變，這裡不用等——
+    /// Reload 只是清掉快取的任務／狀態，之後 Update() 本來就會在 BetweenAreas 期間自然暫停，
+    /// 讀取結束後才會真的重新導航。
+    /// </para>
+    /// </remarks>
+    protected override void OnRepeatedInterruption(int consecutiveCount)
+    {
+        if (consecutiveCount != 3 ||
+            !_configuration.General.TeleportToAetheryteOnRepeatedInterruption ||
+            _condition[ConditionFlag.InCombat] ||
+            _objectTable[0] == null)
+        {
+            return;
+        }
+
+        uint territoryType = _clientState.TerritoryType;
+        Vector3 currentPosition = _objectTable[0]!.Position;
+
+        EAetheryteLocation? nearest = null;
+        float nearestDistance = float.MaxValue;
+        foreach (EAetheryteLocation location in _aetheryteData.Locations.Keys)
+        {
+            if (!AetheryteConverter.IsLargeAetheryte(location) ||
+                !_aetheryteFunctions.IsAetheryteUnlocked(location))
+            {
+                continue;
+            }
+
+            float distance = _aetheryteData.CalculateDistance(currentPosition, territoryType, location);
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = location;
+            }
+        }
+
+        if (nearest == null || !_aetheryteFunctions.CanTeleport(nearest.Value))
+        {
+            _logger.LogWarning(
+                "Repeated interruption ({Count}), but no usable large aetheryte found in territory {TerritoryType} to emergency-teleport to",
+                consecutiveCount, territoryType);
+            return;
+        }
+
+        _logger.LogWarning(
+            "Repeated interruption ({Count}), emergency-teleporting to {Aetheryte} and forcing a full replan",
+            consecutiveCount, nearest.Value);
+
+        _chatGui.Print(
+            $"Repeated interruptions detected, teleporting to {nearest.Value} and replanning the route.",
+            CommandHandler.MessageTag, CommandHandler.TagColor);
+
+        _tataruPraiseIpc.NotifyNeedHelp($"Repeated interruption, emergency-teleporting to {nearest.Value}");
+
+        _aetheryteFunctions.TeleportAetheryte(nearest.Value);
+
+        ClearTasksInternal();
+        Reload();
     }
 
     private void UpdateCurrentQuest()

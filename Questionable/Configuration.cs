@@ -53,6 +53,7 @@ internal sealed class Configuration : IPluginConfiguration
         public bool DontSkipCutscenes { get; set; }
         public bool AutoStepRefreshEnabled { get; set; }
         public int AutoStepRefreshDelaySeconds { get; set; } = 30;
+        public bool TeleportToAetheryteOnRepeatedInterruption { get; set; } = true;
         public bool UseTickets { get; set; }
         public bool HideSponsorButton { get; set; }
         public bool DismissedReportWarning { get; set; }

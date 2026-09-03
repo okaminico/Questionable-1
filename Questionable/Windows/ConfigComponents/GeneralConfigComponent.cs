@@ -359,6 +359,30 @@ internal sealed class GeneralConfigComponent : ConfigComponent
 
                 ImGui.TextColored(new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1.0f),
                     "Quest steps will refresh automatically after ?? seconds if no progress is made.".Loc(autoStepRefreshDelay));
+
+                ImGui.Spacing();
+                bool teleportOnRepeatedInterruption = Configuration.General.TeleportToAetheryteOnRepeatedInterruption;
+                if (ImGui.Checkbox("Teleport to nearest aetheryte after 3 repeated interruptions (WIP see tooltip)".Loc(), ref teleportOnRepeatedInterruption))
+                {
+                    Configuration.General.TeleportToAetheryteOnRepeatedInterruption = teleportOnRepeatedInterruption;
+                    Save();
+                }
+
+                ImGui.SameLine();
+                using (ImRaii.PushFont(UiBuilder.IconFont))
+                {
+                    ImGui.TextDisabled(FontAwesomeIcon.InfoCircle.ToIconString());
+                }
+
+                if (ImGui.IsItemHovered())
+                {
+                    using (ImRaii.Tooltip())
+                    {
+                        ImGui.Text("If the same step keeps interrupting and retrying 3 times in a row (e.g. an interaction keeps failing), Questionable will teleport to the nearest unlocked large aetheryte in the current zone and replan the route from there, instead of waiting for the delay above.".Loc());
+                        ImGui.Text("Does nothing while in combat, or if no large aetheryte in the current zone is unlocked.".Loc());
+                    }
+                }
+
                 ImGui.Unindent();
             }
         }

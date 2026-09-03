@@ -199,6 +199,15 @@ internal abstract class MiniTaskController<T> : IDisposable
         Stop(label);
     }
 
+    /// <summary>
+    /// 每次插入 WaitAtEnd.WaitDelay() 重試緩衝之後呼叫一次（InterruptQueueWithCombat／
+    /// InterruptWithoutCombat 各自的呼叫點），帶目前的連續次數。預設不做事；
+    /// <see cref="QuestController"/> 覆寫來在重試次數過多時做主動回復（見該類別的實作與註解）。
+    /// </summary>
+    protected virtual void OnRepeatedInterruption(int consecutiveCount)
+    {
+    }
+
     public virtual IList<string> GetRemainingTaskNames()
     {
         return _taskQueue.RemainingTasks.Select(x => x.ToString() ?? "?").ToList();
@@ -208,6 +217,7 @@ internal abstract class MiniTaskController<T> : IDisposable
     {
         _logger.LogWarning("Interrupted, attempting to resolve (if in combat)");
         ConsecutiveInterruptions++;
+        OnRepeatedInterruption(ConsecutiveInterruptions);
         if (_condition[ConditionFlag.InCombat])
         {
             List<ITask> tasks = [];
@@ -234,6 +244,7 @@ internal abstract class MiniTaskController<T> : IDisposable
         {
             _logger.LogWarning("Interrupted, attempting to redo previous tasks (not in combat)");
             ConsecutiveInterruptions++;
+            OnRepeatedInterruption(ConsecutiveInterruptions);
 
             _taskQueue.InterruptWith([new WaitAtEnd.WaitDelay()]);
             LogTasksAfterInterruption();
