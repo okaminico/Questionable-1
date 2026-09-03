@@ -17,8 +17,6 @@ using Questionable.Data;
 using Questionable.External;
 using Questionable.Functions;
 using Questionable.Model;
-using Questionable.Model.Common;
-using Questionable.Model.Common.Converter;
 using Questionable.Model.Questing;
 using Questionable.Windows.ConfigComponents;
 using System;
@@ -53,8 +51,6 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     }
 
     private const char ClipboardSeparator = ';';
-    private readonly AetheryteData _aetheryteData;
-    private readonly AetheryteFunctions _aetheryteFunctions;
     private readonly AlliedSocietyQuestFunctions _alliedSocietyQuestFunctions;
     private readonly IChatGui _chatGui;
     private readonly IClientState _clientState;
@@ -101,6 +97,12 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     /// </summary>
     private DateTime _safeAnimationEnd = DateTime.MinValue;
 
+    /// <summary>
+    /// 見 <see cref="OnRepeatedInterruption"/>：卡在攻頂乙太水晶時，先隨機微幅位移，
+    /// 這個時間到了才強制整個步驟重新規劃。<see langword="null"/> 代表目前沒有排定中的回復。
+    /// </summary>
+    private DateTime? _pendingStuckRecoveryReloadAt;
+
     public QuestController(
         IClientState clientState,
         IObjectTable objectTable,
@@ -125,14 +127,10 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         IDataManager dataManager,
         SinglePlayerDutyConfigComponent singlePlayerDutyConfigComponent,
         AlliedSocietyQuestFunctions alliedSocietyQuestFunctions,
-        TataruPraiseIpc tataruPraiseIpc,
-        AetheryteFunctions aetheryteFunctions,
-        AetheryteData aetheryteData)
+        TataruPraiseIpc tataruPraiseIpc)
         : base(chatGui, condition, serviceProvider, interruptHandler, dataManager, logger)
     {
         _clientState = clientState;
-        _aetheryteFunctions = aetheryteFunctions;
-        _aetheryteData = aetheryteData;
         _objectTable = objectTable;
         //_playerState = playerState;
         _gameFunctions = gameFunctions;
@@ -273,6 +271,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         PendingQuest = null;
         SimulatedQuest = null;
         _safeAnimationEnd = DateTime.MinValue;
+        _pendingStuckRecoveryReloadAt = null;
 
         DebugState = null;
     }
@@ -290,6 +289,13 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     public void Update()
     {
+        if (_pendingStuckRecoveryReloadAt is { } dueAt && DateTime.Now >= dueAt)
+        {
+            _pendingStuckRecoveryReloadAt = null;
+            _logger.LogInformation("Nudge-position stuck recovery: reloading current step now");
+            Reload();
+        }
+
         unsafe
         {
             ActionManager* actionManager = ActionManager.Instance();
@@ -454,77 +460,56 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     }
 
     /// <summary>
-    /// 連續中斷重試達到門檻（見 MiniTaskController.ConsecutiveInterruptions）時，主動傳送到目前所在
-    /// 區域裡最近、已解鎖的大水晶，再強制重新規劃路線——比純被動等卡住偵測（AutoStepRefresh）更快，
-    /// 也不需要使用者自己動手介入。
+    /// 連續中斷重試達到門檻（見 MiniTaskController.ConsecutiveInterruptions）時的主動回復。
     /// </summary>
     /// <remarks>
-    /// 🔴 只在非戰鬥時動作：遊戲本身在戰鬥中就不允許傳送（CanTeleport 會回 false），
-    /// 硬要在這裡呼叫只會靜靜失敗，不如提早跳過，記錄檔留給真正有意義的失敗原因。
+    /// 🔴 <b>刻意只處理一種情境：目的地是乙太水晶，人已經到了，卻沒有成功攻頂/傳送。</b>
+    /// 其他互動類型（NPC 對話、拾取、戰鬥動作……）持續失敗的重試迴圈先不處理，
+    /// 交給被動的 AutoStepRefresh（<see cref="CheckAutoRefreshCondition"/>）去兜底——
+    /// 那些情境的成因太雜，貿然套用同一套回復手段風險比不處理還高。
     /// <para>
-    /// 📌 找不到已解鎖的大水晶（例如角色根本還沒解鎖這個區域的任何大水晶）就什麼都不做，
-    /// 退回純被動的 AutoStepRefresh；不會因為找不到傳送點而拋例外或卡住流程。
+    /// 📌 <b>回復手段是「隨機微幅位移＋重新規劃路線」，不是傳送走。</b>
+    /// 這種卡住通常是 vnavmesh／遊戲判定角色「已經到了」，但實際位置或朝向差了一點，
+    /// 導致攻頂互動判定不到——手動走一小段路就會恢復正常，正是這裡在做的事：
+    /// 隨機挑一個約 1.5~3 碼外的鄰近點導航過去，讓角色物理上真的移動一段距離，
+    /// 兩秒後再強制整個步驟重新規劃（<see cref="ClearTasksInternal"/> + <see cref="Reload"/>）。
+    /// 不會把角色傳送到別的地方，微幅移動用肉眼幾乎看不出來。
     /// </para>
     /// <para>
-    /// 📌 傳送後立刻 ClearTasksInternal + Reload，跟 CheckAutoRefreshCondition 判定卡住時做的事一樣，
-    /// 強制整條路線從頭規劃。玩家實際位置要等傳送的讀取畫面結束才會真正改變，這裡不用等——
-    /// Reload 只是清掉快取的任務／狀態，之後 Update() 本來就會在 BetweenAreas 期間自然暫停，
-    /// 讀取結束後才會真的重新導航。
+    /// 🔴 只在非戰鬥時動作：戰鬥中要嘛不該在做這個任務步驟，要嘛移動本身另有戰鬥系統處理。
     /// </para>
     /// </remarks>
     protected override void OnRepeatedInterruption(int consecutiveCount)
     {
         if (consecutiveCount != 3 ||
-            !_configuration.General.TeleportToAetheryteOnRepeatedInterruption ||
+            !_configuration.General.NudgePositionOnAetheryteAttuneStuck ||
             _condition[ConditionFlag.InCombat] ||
-            _objectTable[0] == null)
+            _objectTable[0] == null ||
+            _taskQueue.CurrentTaskExecutor?.CurrentTask is not Aetheryte.Attune attune)
         {
             return;
         }
 
-        uint territoryType = _clientState.TerritoryType;
         Vector3 currentPosition = _objectTable[0]!.Position;
-
-        EAetheryteLocation? nearest = null;
-        float nearestDistance = float.MaxValue;
-        foreach (EAetheryteLocation location in _aetheryteData.Locations.Keys)
+        double angle = Random.Shared.NextDouble() * Math.PI * 2;
+        float nudgeDistance = 1.5f + (float)Random.Shared.NextDouble() * 1.5f;
+        Vector3 nudgeTarget = currentPosition with
         {
-            if (!AetheryteConverter.IsLargeAetheryte(location) ||
-                !_aetheryteFunctions.IsAetheryteUnlocked(location))
-            {
-                continue;
-            }
-
-            float distance = _aetheryteData.CalculateDistance(currentPosition, territoryType, location);
-            if (distance < nearestDistance)
-            {
-                nearestDistance = distance;
-                nearest = location;
-            }
-        }
-
-        if (nearest == null || !_aetheryteFunctions.CanTeleport(nearest.Value))
-        {
-            _logger.LogWarning(
-                "Repeated interruption ({Count}), but no usable large aetheryte found in territory {TerritoryType} to emergency-teleport to",
-                consecutiveCount, territoryType);
-            return;
-        }
+            X = currentPosition.X + (float)Math.Cos(angle) * nudgeDistance,
+            Z = currentPosition.Z + (float)Math.Sin(angle) * nudgeDistance
+        };
 
         _logger.LogWarning(
-            "Repeated interruption ({Count}), emergency-teleporting to {Aetheryte} and forcing a full replan",
-            consecutiveCount, nearest.Value);
+            "Repeated interruption ({Count}) while attuning aetheryte {Aetheryte}, nudging position by ~{Distance:F1}y and recalculating route",
+            consecutiveCount, attune.AetheryteLocation, nudgeDistance);
 
         _chatGui.Print(
-            $"Repeated interruptions detected, teleporting to {nearest.Value} and replanning the route.",
+            $"Repeated interruptions attuning {attune.AetheryteLocation}, nudging position and recalculating route.",
             CommandHandler.MessageTag, CommandHandler.TagColor);
 
-        _tataruPraiseIpc.NotifyNeedHelp($"Repeated interruption, emergency-teleporting to {nearest.Value}");
-
-        _aetheryteFunctions.TeleportAetheryte(nearest.Value);
-
         ClearTasksInternal();
-        Reload();
+        _movementController.NavigateTo(EMovementType.None, null, nudgeTarget, false, false, 0.5f);
+        _pendingStuckRecoveryReloadAt = DateTime.Now.AddSeconds(2);
     }
 
     private void UpdateCurrentQuest()

@@ -361,10 +361,10 @@ internal sealed class GeneralConfigComponent : ConfigComponent
                     "Quest steps will refresh automatically after ?? seconds if no progress is made.".Loc(autoStepRefreshDelay));
 
                 ImGui.Spacing();
-                bool teleportOnRepeatedInterruption = Configuration.General.TeleportToAetheryteOnRepeatedInterruption;
-                if (ImGui.Checkbox("Teleport to nearest aetheryte after 3 repeated interruptions (WIP see tooltip)".Loc(), ref teleportOnRepeatedInterruption))
+                bool nudgeOnAetheryteAttuneStuck = Configuration.General.NudgePositionOnAetheryteAttuneStuck;
+                if (ImGui.Checkbox("Nudge position after 3 repeated interruptions while attuning an aetheryte (WIP see tooltip)".Loc(), ref nudgeOnAetheryteAttuneStuck))
                 {
-                    Configuration.General.TeleportToAetheryteOnRepeatedInterruption = teleportOnRepeatedInterruption;
+                    Configuration.General.NudgePositionOnAetheryteAttuneStuck = nudgeOnAetheryteAttuneStuck;
                     Save();
                 }
 
@@ -378,8 +378,9 @@ internal sealed class GeneralConfigComponent : ConfigComponent
                 {
                     using (ImRaii.Tooltip())
                     {
-                        ImGui.Text("If the same step keeps interrupting and retrying 3 times in a row (e.g. an interaction keeps failing), Questionable will teleport to the nearest unlocked large aetheryte in the current zone and replan the route from there, instead of waiting for the delay above.".Loc());
-                        ImGui.Text("Does nothing while in combat, or if no large aetheryte in the current zone is unlocked.".Loc());
+                        ImGui.Text("Only applies when the destination is an aetheryte crystal: if arriving and attuning keeps interrupting and retrying 3 times in a row, Questionable will walk a short random distance and recalculate the route from there, instead of waiting for the delay above.".Loc());
+                        ImGui.Text("Does not teleport anywhere - only a small (1.5-3 yalm) walk, meant to nudge vnavmesh/the game out of a bad position or facing.".Loc());
+                        ImGui.Text("Other kinds of interaction failures are not handled by this - only repeated aetheryte attunement failures.".Loc());
                     }
                 }
 
