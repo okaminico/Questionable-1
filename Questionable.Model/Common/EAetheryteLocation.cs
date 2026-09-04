@@ -241,6 +241,7 @@ public enum EAetheryteLocation
     TuliyollalIhuykatumu = 227,
     TuliyollalDirigibleLandingYakTel = 228,
     TuliyollalXakTuralSkygate = 229,
+    TuliyollalPhantomVillage = 239,
 
     SolutionNine = 217,
     SolutionNineInformationCenter = 230,

@@ -44,4 +44,5 @@ public enum EInteractionType
 
     AcceptQuest,
     CompleteQuest,
+    Fish,
 }
