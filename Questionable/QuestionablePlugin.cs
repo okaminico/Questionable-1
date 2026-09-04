@@ -17,6 +17,7 @@ using Questionable.Controller.Steps.Common;
 using Questionable.Controller.Steps.Gathering;
 using Questionable.Controller.Steps.Interactions;
 using Questionable.Controller.Steps.Movement;
+using Questionable.Controller.Steps.Fishing;
 using Questionable.Controller.Steps.Shared;
 using Questionable.Controller.Utils;
 using Questionable.Data;
@@ -177,8 +178,10 @@ public sealed class QuestionablePlugin : IDalamudPlugin
         serviceCollection.AddSingleton<YesAlreadyIpc>();
         serviceCollection.AddSingleton<StylistIpc>();
         serviceCollection.AddSingleton<TataruPraiseIpc>();
+        serviceCollection.AddSingleton<IAutoHookIpc, AutoHookIpc>();
 
         serviceCollection.AddSingleton<GearStatsCalculator>();
+        serviceCollection.AddSingleton<IFishingPresetGenerator, FishingPresetGenerator>();
     }
 
     private static void AddTaskFactories(ServiceCollection serviceCollection)
@@ -192,6 +195,7 @@ public sealed class QuestionablePlugin : IDalamudPlugin
             .AddTaskFactoryAndExecutor<RedeemRewardItems.Task, RedeemRewardItems.Factory, RedeemRewardItems.Executor>();
         serviceCollection.AddTaskExecutor<DoGather.Task, DoGather.GatherExecutor>();
         serviceCollection.AddTaskExecutor<DoGatherCollectable.Task, DoGatherCollectable.GatherCollectableExecutor>();
+        serviceCollection.AddTaskFactoryAndExecutor<Fish.FishTask, Fish.Factory, Fish.DoFish>();
         serviceCollection.AddTaskFactoryAndExecutor<SwitchClassJob.Task, SwitchClassJob.Factory,
             SwitchClassJob.SwitchClassJobExecutor>();
         serviceCollection.AddTaskFactoryAndExecutor<CreateGearset.Task, CreateGearset.Factory,

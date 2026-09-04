@@ -68,6 +68,8 @@
         <EmbeddedResource Include="Controller\CombatModules\BossModPreset_QuestBattle.json">
             <LogicalName>Questionable.Controller.CombatModules.BossModPreset.QuestBattle</LogicalName>
         </EmbeddedResource>
+        <EmbeddedResource Include="Controller\Steps\Fishing\FishingPreset_Base.json" />
+        <EmbeddedResource Include="Controller\Steps\Fishing\FishingPreset_Bait.json" />
     </ItemGroup>
 
     <ItemGroup>
