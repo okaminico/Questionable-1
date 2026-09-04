@@ -101,7 +101,10 @@ jobs:
           $json[0].DownloadLinkInstall = "https://github.com/${{ github.repository }}/releases/download/$tag/latest.zip"
           $json[0].DownloadLinkUpdate = "https://github.com/${{ github.repository }}/releases/download/$tag/latest.zip"
           $json[0].Changelog = "自動合併 ffxiv-tc-port/Questionable 上游更新（$(Get-Date -Format 'yyyy-MM-dd')）。"
-          $json | ConvertTo-Json -Depth 10 | Set-Content -Path repo.json
+          # -AsArray 是必要的：repo.json 只有一個外掛項目時，ConvertTo-Json 預設會把單元素陣列
+          # 拆成裸物件（沒有外層 [ ]），Dalamud 的自訂插件庫格式要求最外層必須是陣列，
+          # 拆掉了外層 [ ] 就會變成「下載失敗」。
+          $json | ConvertTo-Json -Depth 10 -AsArray | Set-Content -Path repo.json
           "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Commit and push
