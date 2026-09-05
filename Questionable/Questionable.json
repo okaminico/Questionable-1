@@ -1,8 +1,8 @@
 ﻿{
   "Name": "Questionable",
   "Author": "liza, qstxiv, & various contributors",
-  "Punchline": "A tiny quest helper plugin.",
-  "Description": "A tiny little quest helper plugin, which does quests for you automatically where possible. Uses navmesh to automatically walk to all quest waypoints, and tries to automatically complete all steps along the way (excluding dungeons, single player duties and combat).\n\nNot all quests are supported, check the discord or git repository for an up-to-date list.\n\nRequired Plugins: vnavmesh, TextAdvance, Lifestream",
+  "Punchline": "自動跑任務助手，導航並完成任務",
+  "Description": "自動跑任務插件：\n- 自動導航至任務目標並完成對話、互動與戰鬥觸發\n- 支援主線／支線任務、部分部落任務與採集類任務\n- 提供任務執行優先順序與除錯視窗\n- 需搭配 vnavmesh、TextAdvance、Lifestream 使用",
   "Tags": [
     "quests",
     "msq"

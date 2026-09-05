@@ -478,6 +478,16 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     /// <para>
     /// 🔴 只在非戰鬥時動作：戰鬥中要嘛不該在做這個任務步驟，要嘛移動本身另有戰鬥系統處理。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>「位置／朝向差一點」是經驗推測，不是證明。</b>
+    /// 這個成因是原作者從實際卡住的情況歸納出來的，我們沒有離線或實機證據能證實它，
+    /// 也沒有辦法在不實機的情況下證實。
+    /// <br/>
+    /// 📌 <b>假設不成立時的後果：白走 1.5~3 碼，然後照樣重新規劃路線。</b>
+    /// 角色只是多繞一小段路，不會卡死、不會傳送、不會離開原地附近，
+    /// 真正的兜底仍然是被動的 <see cref="CheckAutoRefreshCondition"/>（AutoStepRefresh）。
+    /// 也就是說，這個推測猜錯的代價是「沒幫上忙」，不是「把事情弄壞」。
+    /// </para>
     /// </remarks>
     protected override void OnRepeatedInterruption(int consecutiveCount)
     {

@@ -361,7 +361,7 @@ internal sealed class PathDownloader : IDisposable
         _statusText =
             $"新下載 {Downloaded}、已是最新 {UpToDate}、本機已修改未覆蓋 {LocallyModified}、失敗 {Failed}";
 
-        // 📌 使用者跑 LogLevel 2（Information），Debug/Verbose 收不到 —— 要能被回報的診斷寫這一級。
+        // 📌 使用者跑 LogLevel 1（Serilog 的 Debug 門檻；Information 是 2），盲區只有 Verbose,Debug 收得到但單檔數十萬行會淹沒 —— 要能被回報的診斷寫這一級。
         _pluginLog.Information($"[GatheringPaths] 更新完成：{_statusText}");
         foreach (string failure in SnapshotFailures())
             _pluginLog.Information($"[GatheringPaths] 失敗：{failure}");

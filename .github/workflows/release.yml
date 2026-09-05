@@ -70,3 +70,4 @@ jobs:
 
 # 2026-08-16: repo 重建後 workflow_dispatch-only workflow 未被 Actions 重新註冊,touch 本檔強制重掃
 # touched 2026-09-02T19:14:08Z to force Actions re-scan after enabling Actions on the fork
+# 2026-09-03: repo 再次重建(下架重推斷開外來 fork),workflow 同樣未自動註冊,touch 本檔重掃

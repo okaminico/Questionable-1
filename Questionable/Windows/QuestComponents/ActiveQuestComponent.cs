@@ -114,6 +114,14 @@ internal sealed partial class ActiveQuestComponent
             if (!isMinimized)
             {
                 ImGui.TextColored(ImGuiColors.DalamudGrey, $"{_questRegistry.Count} {"quests loaded".Loc()}");
+                // 有多少內建路線在目前的遊戲版本上根本用不到 —— 這是「起疑才查」的資訊,
+                // 放 tooltip 不佔列上版面。
+                if (_questRegistry.SkippedQuestCount > 0 && ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(
+                        "?? more quest paths ship with the plugin, but the quests they would complete don't exist in this version of the game."
+                            .Loc(_questRegistry.SkippedQuestCount));
+                }
             }
 
             if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop))

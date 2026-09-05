@@ -38,7 +38,17 @@ internal sealed class AutoHookIpc : IAutoHookIpc
     public AutoHookIpc(ILogger<AutoHookIpc> logger)
     {
         _logger = logger;
-        EzIPC.Init(this, "AutoHook", SafeWrapper.IPCException);
+        // 🔴 這裡刻意不帶 SafeWrapper。SafeWrapperIPC 的 InvokeFunction 攔下 IpcNotReadyError、
+        // 呼叫 EzIPC.OnSafeInvocationException 之後 return default，**不重擲**——於是:
+        //   ① IsAvailable() 的實作是「呼叫探測、沒擲例外就 return true」⇒ 恆為 true，
+        //      AutoHook 不在時照樣產生釣魚任務，卡在等一個沒有接收者的 /ahstart。
+        //   ② IsPluginEnabled() 恆為 false ⇒ DoFish 的 _wasAutoHookEnabled 恆為 false ⇒
+        //      Cleanup() 會把使用者原本開著的 AutoHook 關掉。
+        // 本檔的 IpcInvoke.SafeFunc 已經分級處理好了(IpcNotReadyError 靜默早退，
+        // 其餘 IpcError／TargetInvocationException 才 LogWarning)，只是被上一層吃掉走不到。
+        // ⚠️ 代價:這條通道的失敗不再經過 EzIpcFailureLog(它掛在 OnSafeInvocationException 上)，
+        //    改由 IpcInvoke 自己記錄。
+        EzIPC.Init(this, "AutoHook");
     }
 
     public bool IsAvailable() =>

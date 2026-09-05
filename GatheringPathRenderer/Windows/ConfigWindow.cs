@@ -177,7 +177,7 @@ internal sealed class ConfigWindow : Window
 
         // 失敗的檔名可能有上百個，攤在 AlwaysAutoResize 的視窗上會把視窗撐爆。
         // 列上只放「有幾個失敗」（那是要能隨時掃視的），細節收在摺疊區，
-        // 完整清單另外以 Information 等級寫進 log（使用者跑 LogLevel 2）。
+        // 完整清單另外以 Information 等級寫進 log（使用者跑 LogLevel 1）。
         if (ImGui.CollapsingHeader($"失敗的 {failed} 個檔###GatheringPathFailures"))
         {
             List<string> failures = _pathDownloader.SnapshotFailures();

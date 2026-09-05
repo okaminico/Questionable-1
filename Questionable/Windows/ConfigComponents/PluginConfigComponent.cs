@@ -28,6 +28,13 @@ internal sealed class PluginConfigComponent
     AutomatonIpc automatonIpc,
     PandorasBoxIpc pandorasBoxIpc) : ConfigComponent(pluginInterface, configuration)
 {
+    // 這裡絕對不能指國際服的外掛庫：那些庫裡的 vnavmesh／Lifestream／TextAdvance／Artisan
+    // 內部名與台服版完全相同，按下去會把 API15 的版本裝進台服環境並撞同一個已安裝鍵。
+    // 台服艦隊有移植版的一律指本艦隊的 feed；沒有移植版的（Rotation Solver Reborn、
+    // CBT/Automaton、Pandora's Box）保留原網址。
+    private const string TcRepositoryUrl =
+        "https://raw.githubusercontent.com/ffxiv-tc-port/DalamudPluginsTC/main/repo.json";
+
     private static readonly IReadOnlyList<PluginInfo> RequiredPlugins =
     [
         new("vnavmesh",
@@ -37,14 +44,14 @@ internal sealed class PluginConfigComponent
             your character to the next quest-related objective.
             """.Loc(),
             new("https://github.com/awgil/ffxiv_navmesh/"),
-            new("https://puni.sh/api/repository/veyn")),
+            new(TcRepositoryUrl)),
         new("Lifestream",
             "Lifestream",
             """
             Used to travel to aethernet shards in cities.
             """.Loc(),
             new("https://github.com/NightmareXIV/Lifestream"),
-            new("https://github.com/NightmareXIV/MyDalamudPlugins/raw/main/pluginmaster.json")),
+            new(TcRepositoryUrl)),
         new("TextAdvance",
             "TextAdvance",
             """
@@ -52,7 +59,7 @@ internal sealed class PluginConfigComponent
             and dialogue.
             """.Loc(),
             new("https://github.com/NightmareXIV/TextAdvance"),
-            new("https://github.com/NightmareXIV/MyDalamudPlugins/raw/main/pluginmaster.json"))
+            new(TcRepositoryUrl))
     ];
 
     private static readonly ReadOnlyDictionary<Configuration.ECombatModule, PluginInfo> CombatPlugins =
@@ -64,7 +71,7 @@ internal sealed class PluginConfigComponent
                     "BossMod",
                     string.Empty,
                     new("https://github.com/awgil/ffxiv_bossmod"),
-                    new("https://puni.sh/api/repository/veyn"))
+                    new(TcRepositoryUrl))
             },
             {
                 Configuration.ECombatModule.RotationSolverReborn,
@@ -119,7 +126,7 @@ internal sealed class PluginConfigComponent
             Automates crafting
             """.Loc(),
             new("https://github.com/PunishXIV/Artisan"),
-            new("https://puni.sh/api/plugins"),
+            new(TcRepositoryUrl),
             "/artisan")
     ];
     private readonly UiUtils _uiUtils = uiUtils;

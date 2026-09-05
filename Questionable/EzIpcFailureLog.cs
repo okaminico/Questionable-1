@@ -81,7 +81,7 @@ internal static class EzIpcFailureLog
                 if(LastLogged.Count >= MaxTrackedMessages) LastLogged.Clear();
                 LastLogged[detail] = now;
             }
-            // 一律 Information：使用者的記錄等級會把 Debug/Verbose 濾掉。
+            // 一律 Information：使用者的記錄等級只會濾掉 Verbose、Debug 收得到但單檔數十萬行會淹沒。
             global::ECommons.DalamudServices.Svc.Log.Information(
                 $"[EzIPC] 跨外掛 IPC 呼叫失敗，例外已被 SafeWrapper 吞掉並回傳 default 值：{detail}");
         }

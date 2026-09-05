@@ -62,6 +62,11 @@ internal sealed class QuestRegistry
     public IEnumerable<Quest> AllQuests => _quests.Values;
     private CachedValue<int> _count = new(ttlSeconds: 1);
     public int Count => _count.Get(() => _quests.Count(x => !x.Value.Root.Disabled));
+    /// <summary>
+    /// 內建任務路線中,因為目前遊戲版本的 Quest 表查不到對應任務而沒有載入的條數。
+    /// </summary>
+    public int SkippedQuestCount { get; private set; }
+
     public int ValidationIssueCount => _questValidator.IssueCount;
     public int ValidationErrorCount => _questValidator.ErrorCount;
 
@@ -112,6 +117,7 @@ internal sealed class QuestRegistry
     {
         _logger.LogInformation("Loading quests from assembly");
 
+        int skippedQuestCount = 0;
         foreach((ElementId questId, QuestRoot questRoot) in AssemblyQuestLoader.GetQuests())
         {
             try
@@ -128,8 +134,23 @@ internal sealed class QuestRegistry
             }
             catch(Exception e)
             {
+                ++skippedQuestCount;
                 _logger.LogDebug("Not loading unknown quest {QuestId} from assembly: {Message}", questId, e.Message);
             }
+        }
+
+        SkippedQuestCount = skippedQuestCount;
+
+        // 落後於國際服的地區(例如台服)其 Quest 表只涵蓋已實裝的內容:更新的任務要嘛整列不存在,
+        // 要嘛列在但欄位全空(Name 為空、IssuerLocation 為 0)。QuestData 建表時就以 IssuerLocation > 0
+        // 過濾,所以這些任務不會進到 _quests,也就不會出現在任務日誌、任務搜尋、優先任務等任何清單裡。
+        // 這裡不重複那道過濾,只是把「被略過幾條」寫成使用者看得到的診斷 —— 原本只有 Debug 級的
+        // 逐條訊息,在動輒數十萬行的實機 log 裡等於靜默,害得同一個問題要從頭查一次。
+        if (skippedQuestCount > 0)
+        {
+            _logger.LogInformation(
+                "Skipped {Count} quest paths whose quests are missing from this client's Quest sheet (content not released in this region yet)",
+                skippedQuestCount);
         }
 
         _logger.LogInformation("Loaded {Count} quests from assembly", _quests.Count);

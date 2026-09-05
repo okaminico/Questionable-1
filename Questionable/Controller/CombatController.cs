@@ -64,6 +64,8 @@ internal sealed class CombatController : IDisposable
         ILogger<CombatController> logger)
     {
         _combatModules = [.. combatModules];
+        logger.LogInformation("Combat modules registered (in order): {Modules}",
+            string.Join(", ", _combatModules.Select(x => x.GetType().Name)));
         _movementController = movementController;
         _targetManager = targetManager;
         _objectTable = objectTable;
@@ -88,7 +90,13 @@ internal sealed class CombatController : IDisposable
     {
         Stop("Starting combat");
 
-        ICombatModule? combatModule = _combatModules.FirstOrDefault(x => x.CanHandleFight(combatData));
+        ICombatModule? combatModule = null;
+        if (combatData.CombatItemUse != null)
+        {
+            combatModule = _combatModules.OfType<ItemUseModule>().FirstOrDefault(x => x.CanHandleFight(combatData));
+        }
+
+        combatModule ??= _combatModules.FirstOrDefault(x => x.CanHandleFight(combatData));
         if (combatModule == null)
         {
             return false;

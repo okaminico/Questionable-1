@@ -36,6 +36,25 @@ internal sealed class TataruPraiseIpc(
     /// <summary><c>Func&lt;bool&gt;</c>：現在有沒有辦法出聲（總開關開著、而且池裡有已合成的句子）。</summary>
     public const string IsAvailableIpcName = "TataruPraise.IsAvailable";
 
+    /// <summary>
+    /// <c>Func&lt;string, bool&gt;</c>：<b>指定的那個情境</b>現在出得了聲嗎
+    /// （總開關開著＋這個情境沒被關掉＋這個情境至少有一句已合成的語音）。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 <b>閘門要問的是這一個，不是 <see cref="IsAvailableIpcName"/>。</b>後者問的是
+    /// 「整池<b>有某個情境</b>播得出來」，於是「別的情境有語音、<b>需要幫忙</b>一句都沒有」時
+    /// 照樣通過，接著 <c>Praise</c> 回 <c>false</c>——呼叫端就分不出「不能出聲」與「這次剛好沒出聲」。
+    /// <para>
+    /// 📌 它刻意<b>不看冷卻</b>：冷卻是「這次剛好不出聲」，不是「不能出聲」。
+    /// </para>
+    /// <para>
+    /// 🔴 舊版 TataruPraise 沒有註冊這個端點，<c>InvokeFunc</c> 會擲 <c>IpcNotReadyError</c>，
+    /// 剛好落進既有的 catch＝安靜不出聲，這是正確的 fail-safe。
+    /// <b>失敗時絕不可以退回去叫 <see cref="IsAvailableIpcName"/></b>——那樣就把這個端點的意義整個抵銷掉了。
+    /// </para>
+    /// </remarks>
+    public const string IsAvailableForIpcName = "TataruPraise.IsAvailableFor";
+
     /// <summary><c>Func&lt;string, bool&gt;</c>：從指定情境的誇獎池挑一句念。</summary>
     public const string PraiseIpcName = "TataruPraise.Praise";
 
@@ -45,8 +64,8 @@ internal sealed class TataruPraiseIpc(
     /// </summary>
     public const string NeedHelpCategory = "需要幫忙";
 
-    private readonly ICallGateSubscriber<bool> _isAvailable =
-        pluginInterface.GetIpcSubscriber<bool>(IsAvailableIpcName);
+    private readonly ICallGateSubscriber<string, bool> _isAvailableFor =
+        pluginInterface.GetIpcSubscriber<string, bool>(IsAvailableForIpcName);
 
     private readonly ICallGateSubscriber<string, bool> _praise =
         pluginInterface.GetIpcSubscriber<string, bool>(PraiseIpcName);
@@ -73,19 +92,20 @@ internal sealed class TataruPraiseIpc(
 
         try
         {
-            // 先問「現在出得了聲嗎」。對方沒安裝／沒載入的話這一行就會擲 IpcNotReadyError，
-            // 下面的 Praise 根本不會被呼叫到。
-            if (!_isAvailable.InvokeFunc())
+            // 先問「『需要幫忙』這個情境現在出得了聲嗎」。對方沒安裝／沒載入的話這一行就會擲
+            // IpcNotReadyError，下面的 Praise 根本不會被呼叫到。
+            if (!_isAvailableFor.InvokeFunc(NeedHelpCategory))
             {
-                logger.LogDebug("{PluginName} 目前不方便出聲（總開關關著，或誇獎池沒有已合成的句子），這次不喊：{Reason}",
-                    PluginName, reason);
+                logger.LogDebug(
+                    "{PluginName} 的「{Category}」情境現在出不了聲（總開關關著、這個情境被關掉、或這個情境一句已合成的都沒有），這次不喊：{Reason}",
+                    PluginName, NeedHelpCategory, reason);
                 return;
             }
 
             bool queued = _praise.InvokeFunc(NeedHelpCategory);
             _loggedNotInstalled = false;
 
-            // 📌 使用者跑 LogLevel 2，Debug／Verbose 收不到 —— 這是「到底有沒有喊出去」唯一的線索。
+            // 📌 使用者跑 LogLevel 1，盲區只有 Verbose,Debug 收得到但單檔數十萬行會淹沒 —— 這是「到底有沒有喊出去」唯一的線索。
             // ⚠️ 回傳 false 不是錯誤：可能還在冷卻，也可能「需要幫忙」這個情境在池裡一句都沒有。
             if (queued)
             {
@@ -108,7 +128,7 @@ internal sealed class TataruPraiseIpc(
                 logger.LogInformation(
                     "想請 {PluginName} 在卡住時喊一句，但它沒有安裝或尚未載入（IPC「{IpcName}」沒有人註冊）。" +
                     "這個功能會維持靜默，Questionable 其餘流程完全不受影響。",
-                    PluginName, IsAvailableIpcName);
+                    PluginName, IsAvailableForIpcName);
             }
         }
         catch(Exception e)

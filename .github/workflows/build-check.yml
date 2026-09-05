@@ -29,3 +29,4 @@ jobs:
       - name: Build with dotnet
         run: dotnet build --configuration Release Questionable/Questionable.csproj -p:DalamudLibPath="$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\"
 # touched 2026-09-02T19:14:08Z to force Actions re-scan after enabling Actions on the fork
+# 2026-09-03: repo 下架重推後 Build Check 未被 Actions 註冊(release.yml 的 touch 沒帶到它),touch 本檔重掃

@@ -1,8 +1,8 @@
 {
   "Name": "GatheringPathRenderer",
   "Author": "alydev",
-  "Punchline": "[Questionable dev plugin]: Renders gathering location.",
-  "Description": "[Questionable dev plugin]: Renders gathering location using Pictomancy.",
+  "Punchline": "[Questionable 開發用] 繪製採集路徑點",
+  "Description": "[Questionable 開發用插件]：使用 Pictomancy 繪製採集點路徑，供路徑資料編輯者使用。",
   "RepoUrl": "https://github.com/ffxiv-tc-port/Questionable/tree/tc-7.20/GatheringPathRenderer",
   "DalamudApiLevel": 13
 }

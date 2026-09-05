@@ -238,6 +238,7 @@ internal static unsafe class AddonPressGuard
         // 🔑 追蹤不了的窗一律放行：守衛失效時要退回「既有行為」，不是把功能關掉。
         if (string.IsNullOrEmpty(addonName))
         {
+            LogPressDiag(addonName, address, pressKey);
             return true;
         }
 
@@ -273,6 +274,7 @@ internal static unsafe class AddonPressGuard
         }
 
         presses[pressKey] = new PressRecord(address, frame, escapeFrames, false);
+        LogPressDiag(addonName, address, pressKey);
         return true;
     }
 
@@ -461,6 +463,25 @@ internal static unsafe class AddonPressGuard
 
         presses[DestroyingKeyPrefix + address.ToString("X", CultureInfo.InvariantCulture)] =
             new PressRecord(address, CurrentFrame, DefaultEscapeFrames, true);
+    }
+
+    /// <summary>
+    ///     跨外掛「按窗診斷」：在<b>真的送出按壓</b>的那一刻寫一行 <c>Information</c>。
+    /// </summary>
+    /// <remarks>
+    ///     全艦隊 15 份各自獨立的 <c>AddonPressGuard</c> 只擋自己按過的位址：外掛 A 按下之後
+    ///     「關閉中」那幾幀，外掛 B 的表是空的 ⇒ 照按 ⇒ 攔不到的存取違規。
+    ///     這一行的用途是用一輪實機 log 回答「跨外掛重按是不是真的在發生」，
+    ///     格式<b>逐字</b>與其他外掛統一，才能按 <c>addr</c> 交叉比對。
+    ///     🔴 刻意<b>不節流</b>（漏掉一次就是漏掉一個對照樣本）；
+    ///     🔴 位址只印數值，<b>不解參考</b>。
+    ///     ⚠️ 追蹤不了窗名的那條放行路徑也記，只是 <c>addon=?</c>：那一次按壓照樣送得出去，
+    ///     漏掉它會讓交叉比對出現看不見的缺口。
+    /// </remarks>
+    private static void LogPressDiag(string addonName, nint address, string pressKey)
+    {
+        string name = string.IsNullOrEmpty(addonName) ? "?" : addonName;
+        Svc.Log.Information($"[按窗診斷] plugin=Questionable addon={name} addr=0x{address:X} key={pressKey ?? string.Empty}");
     }
 
     private static void LogHold(string addonName, nint address, string pressKey, string blockingKey, bool routine)
