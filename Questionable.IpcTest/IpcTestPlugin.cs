@@ -65,10 +65,15 @@ public sealed class IpcTestPlugin : IDalamudPlugin
     [SuppressMessage("ReSharper", "ClassNeverInstantiated.Local")]
     [SuppressMessage("ReSharper", "UnusedAutoPropertyAccessor.Local")]
     // ReSharper disable once InconsistentNaming
+    // 🔴 這是 Questionable.External.QuestionableIpc.StepData 的鏡像型別（本專案刻意不參考
+    //    Questionable，所以具名不到對方的型別）。Dalamud 的 CallGateChannel.ConvertObject 靠
+    //    Newtonsoft 做 JSON 來回轉換，**只認成員名字**——名字對不上不會擲例外，只會留在預設值。
+    //    ⇒ 每個成員名與型別都必須逐字等於對方（TerritoryId 在對方是 uint，本檔原本寫 ushort，
+    //    只是因為區域 id 一直沒超過 65535 才沒出事）。對方沒有的成員可以不寫，寫了就不能寫錯。
     private sealed class IpcStepData
     {
         public required string InteractionType { get; set; }
         public required Vector3? Position { get; set; }
-        public required ushort TerritoryId { get; set; }
+        public required uint TerritoryId { get; set; }
     }
 }
