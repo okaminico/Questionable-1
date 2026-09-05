@@ -126,7 +126,8 @@
           "TerritoryId": 622,
           "InteractionType": "Interact",
           "AetheryteShortcut": "Azim Steppe - Dawn Throne",
-          "Fly": true
+          "Fly": true,
+          "Land": true
         }
       ]
     },
@@ -159,6 +160,7 @@
           "InteractionType": "Interact",
           "AetheryteShortcut": "Azim Steppe - Dawn Throne",
           "Fly": true,
+          "Land": true,
           "DialogueChoices": [
             {
               "Prompt": "TEXT_STMBDY991_01554_Q3_000_000",

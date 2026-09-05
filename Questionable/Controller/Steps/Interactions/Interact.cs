@@ -387,6 +387,17 @@ internal static class Interact
                 return false;
             }
 
+            // interacting always fails while airborne on a flying mount, regardless of the quest
+            // step's own Fly/Land configuration; land (and if needed, dismount) before trying
+            if (condition[ConditionFlag.InFlight])
+            {
+                logger.LogInformation("Preparing interaction for {DataId} by landing", Task.DataId);
+                _needsUnmount = true;
+                gameFunctions.Unmount();
+                _continueAt = DateTime.Now.AddSeconds(1);
+                return true;
+            }
+
             // this is only relevant for followers on quests
             if (!gameObject.IsTargetable && condition[ConditionFlag.Mounted] &&
                 gameObject.ObjectKind != ObjectKind.GatheringPoint)
