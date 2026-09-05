@@ -78,7 +78,9 @@ jobs:
           # BuildNumber.txt 是 .gitignore 排除的本機檔案，CI 每次全新 checkout 都會重算成同一個值，
           # 版本號永遠不會變化，Dalamud 也就永遠不會提示更新。改用 run_number（GitHub 保證每次執行嚴格遞增）
           # 明確蓋掉版本號，跟 release.yml 用 git tag 蓋版本號是同一個道理。
-          $ver = "7.15.0.${{ github.run_number }}"
+          $current = (Get-Content -Raw repo.json | ConvertFrom-Json)[0].AssemblyVersion
+          $currentBuild = [int]($current -split '\.')[3]
+          $ver = "7.15.0." + ($currentBuild + 1)
           dotnet build --configuration Release Questionable/Questionable.csproj -p:DalamudLibPath="$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\" -p:Version=$ver -p:AssemblyVersion=$ver -p:FileVersion=$ver
           if ($LASTEXITCODE -ne 0) {
             "status=failed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
