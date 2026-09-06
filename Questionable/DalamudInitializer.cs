@@ -6,6 +6,7 @@ using Dalamud.Plugin.Services;
 using Microsoft.Extensions.Logging;
 using Questionable.Controller;
 using Questionable.Controller.Utils;
+using Questionable.External;
 using Questionable.Windows;
 using System;
 namespace Questionable;
@@ -18,6 +19,7 @@ internal sealed class DalamudInitializer : IDisposable
     private readonly HighlightObject _highlightObject;
     private readonly ILogger<DalamudInitializer> _logger;
     private readonly MovementController _movementController;
+    private readonly NavmeshIpc _navmeshIpc;
     private readonly OneTimeSetupWindow _oneTimeSetupWindow;
     private readonly PartyWatchDog _partyWatchDog;
     private readonly IDalamudPluginInterface _pluginInterface;
@@ -31,6 +33,7 @@ internal sealed class DalamudInitializer : IDisposable
         IFramework framework,
         QuestController questController,
         MovementController movementController,
+        NavmeshIpc navmeshIpc,
         WindowSystem windowSystem,
         OneTimeSetupWindow oneTimeSetupWindow,
         QuestWindow questWindow,
@@ -50,6 +53,7 @@ internal sealed class DalamudInitializer : IDisposable
         _framework = framework;
         _questController = questController;
         _movementController = movementController;
+        _navmeshIpc = navmeshIpc;
         _windowSystem = windowSystem;
         _oneTimeSetupWindow = oneTimeSetupWindow;
         _questWindow = questWindow;
@@ -101,6 +105,11 @@ internal sealed class DalamudInitializer : IDisposable
 
     private void FrameworkUpdate(IFramework framework)
     {
+        // 🔴 放在最前面：vnavmesh 移動租約的續約與逾時交回都靠這一行，而下面任何一支
+        //    Update() 擲例外都會讓它之後的程式碼當幀不執行。漏續約的失效形式是「跑到一半
+        //    vnavmesh 的路徑容許值忽然跳回別人的值」，而且全程零訊息。
+        _navmeshIpc.UpdateLease();
+
         _partyWatchDog.Update();
         _questController.Update();
 

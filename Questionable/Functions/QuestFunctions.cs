@@ -9,6 +9,7 @@ using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
+using Microsoft.Extensions.Logging;
 using Questionable.Controller;
 using Questionable.Data;
 using Questionable.Model;
@@ -40,7 +41,8 @@ internal sealed unsafe class QuestFunctions
     //IPlayerState playerState,
     IGameGuiAdapter gameGui,
     IChatGui chatGui,
-    IAetheryteList aetheryteList)
+    IAetheryteList aetheryteList,
+    ILogger<QuestFunctions> logger)
 {
     internal static readonly int[] questsThatUseWhiteWolfGate = [439, 1080, 3870, 33];
     private readonly AetheryteFunctions _aetheryteFunctions = aetheryteFunctions;
@@ -53,6 +55,7 @@ internal sealed unsafe class QuestFunctions
     private readonly IDataManager _dataManager = dataManager;
     //private readonly IPlayerState _playerState;
     private readonly IGameGuiAdapter _gameGui = gameGui;
+    private readonly ILogger<QuestFunctions> _logger = logger;
     private readonly IObjectTable _objectTable = objectTable;
     private readonly QuestData _questData = questData;
     private readonly QuestRegistry _questRegistry = questRegistry;
@@ -1102,7 +1105,16 @@ internal sealed unsafe class QuestFunctions
         }
 
         PlayerState* playerState = PlayerState.Instance();
-        return playerState != null && playerState->ClassJobLevels[classJobRow.ExpArrayIndex] > 0;
+        if (playerState == null)
+            return false;
+
+        // 🔴 ClassJob 第 0 列（冒險者/ADV）的 ExpArrayIndex 是 -1，直接拿去索引 FixedSizeArray35
+        //    會擲 IndexOutOfRangeException。越界時回 false（未知），不是退回索引 0 ——
+        //    第 0 格是格鬥士/武僧的等級，那會是安靜的錯答案。
+        var classJobLevels = playerState->ClassJobLevels;
+        return ExpArrayIndexUtils.IsInRange(classJobRow.ExpArrayIndex, classJobLevels.Length, (uint)classJob,
+                   _logger)
+               && classJobLevels[classJobRow.ExpArrayIndex] > 0;
     }
 
     public bool IsJobUnlocked(Job classJob)

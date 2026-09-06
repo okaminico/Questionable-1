@@ -5,7 +5,9 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using Lumina.Excel.Sheets;
+using Microsoft.Extensions.Logging;
 using Questionable.Model.Questing;
+using Questionable.Utils;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -16,14 +18,17 @@ internal sealed class ClassJobUtils
 {
     private readonly ReadOnlyDictionary<Job, sbyte> _classJobToExpArrayIndex;
     private readonly Configuration _configuration;
+    private readonly ILogger<ClassJobUtils> _logger;
 
     public readonly ReadOnlyCollection<(Job ClassJob, int Category)> SortedClassJobs;
 
     public ClassJobUtils(
         Configuration configuration,
-        IDataManager dataManager)
+        IDataManager dataManager,
+        ILogger<ClassJobUtils> logger)
     {
         _configuration = configuration;
+        _logger = logger;
 
         _classJobToExpArrayIndex = dataManager.GetExcelSheet<ClassJob>()
             .Where(x => x is { RowId: > 0, ExpArrayIndex: >= 0 })
@@ -189,7 +194,21 @@ internal sealed class ClassJobUtils
                     continue;
                 }
 
-                short level = playerState->ClassJobLevels[_classJobToExpArrayIndex[classJob]];
+                // 🔴 _classJobToExpArrayIndex 在建構時已濾掉第 0 列與負的 ExpArrayIndex，
+                //    所以查不到就是「這個職業沒有等級欄位」—— 原本這裡會擲 KeyNotFoundException。
+                if (!_classJobToExpArrayIndex.TryGetValue(classJob, out sbyte expArrayIndex))
+                {
+                    ExpArrayIndexUtils.LogUnknownClassJobOnce((uint)classJob, _logger);
+                    continue;
+                }
+
+                var classJobLevels = playerState->ClassJobLevels;
+                if (!ExpArrayIndexUtils.IsInRange(expArrayIndex, classJobLevels.Length, (uint)classJob, _logger))
+                {
+                    continue;
+                }
+
+                short level = classJobLevels[expArrayIndex];
                 if (level == 0)
                 {
                     continue;

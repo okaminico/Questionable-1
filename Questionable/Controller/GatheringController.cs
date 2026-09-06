@@ -17,6 +17,7 @@ using Questionable.Model.Gathering;
 using Questionable.Model.Questing;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Numerics;
@@ -52,6 +53,10 @@ internal sealed unsafe class GatheringController
     private readonly GatheringPointRegistry _gatheringPointRegistry = gatheringPointRegistry;
     private readonly ILogger<GatheringController> _logger = logger;
     private readonly MovementController _movementController = movementController;
+    // 🔴 NavmeshIpc 是 DI 容器持有的 singleton（ServiceProvider 卸載時會處置它，順便把
+    //    vnavmesh 移動租約交回去）。這裡**不可以**跟著處置：那會提早交回租約，並且讓同一個
+    //    實例的其餘消費端（MovementController）拿到一個已處置的物件。
+    [SuppressMessage("Usage", "CA2213", Justification = "DI 容器持有的 singleton，由 ServiceProvider 處置")]
     private readonly NavmeshIpc _navmeshIpc = navmeshIpc;
     private readonly IObjectTable _objectTable = objectTable;
     private readonly Regex _revisitRegex = DataManagerAdapter.GetRegex<LogMessage>(dataManager, 5574, x => x.Text, pluginLog)
