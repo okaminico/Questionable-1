@@ -587,12 +587,36 @@ internal sealed class CombatController : IDisposable
         */
     }
 
-    public void Stop(string label)
+    /// <summary>停止目前的戰鬥。</summary>
+    /// <param name="defer">
+    /// 不是 <see langword="null"/> 時，<b>只有那一行記錄</b>交給它安排；
+    /// 停戰鬥的動作與狀態重設仍然當場同步做。
+    /// </param>
+    /// <remarks>
+    /// 🔴 <c>QuestController</c> 是持著 <c>_progressLock</c> 呼叫這一支的
+    /// （<c>ClearTasksInternal</c>／<c>ExecuteNextStep</c>／<c>StopAllDueToConditionFailed</c>），
+    /// 而 <c>ILogger</c> 最後落到 Dalamud 的 Serilog sink——那邊自己有鎖、還會做檔案 I/O。
+    /// 📌 延後的那一段把 <c>BeginScope(label)</c> 一起帶進去重建，所以輸出的前綴一個字都沒變。
+    /// 📌 <paramref name="defer"/> 不給的時候行為逐字不變。
+    /// </remarks>
+    public void Stop(string label, Action<Action>? defer = null)
     {
         using IDisposable? scope = _logger.BeginScope(label);
         if (_currentFight != null)
         {
-            _logger.LogInformation("Stopping current fight");
+            if (defer != null)
+            {
+                defer(() =>
+                {
+                    using IDisposable? deferredScope = _logger.BeginScope(label);
+                    _logger.LogInformation("Stopping current fight");
+                });
+            }
+            else
+            {
+                _logger.LogInformation("Stopping current fight");
+            }
+
             _currentFight.Module.Stop();
         }
 

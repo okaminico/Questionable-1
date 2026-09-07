@@ -60,8 +60,31 @@ internal sealed unsafe class QuestFunctions
     private readonly QuestData _questData = questData;
     private readonly QuestRegistry _questRegistry = questRegistry;
 
+    /// <summary>查詢目前任務，並在必要時把提示印給使用者看。</summary>
+    /// <remarks>
+    /// 🔴 <b>持有 <c>QuestController._progressLock</c> 時不要呼叫這一支</b>，
+    /// 用 <see cref="GetCurrentQuestWithHint"/> ——查詢函式本來就不該印東西，
+    /// 而聊天輸出在鎖裡做等於把鎖的持有時間綁在別的元件上。
+    /// </remarks>
     public QuestReference GetCurrentQuest(bool allowNewMsq = true)
     {
+        QuestReference result = GetCurrentQuestWithHint(allowNewMsq, out string? hint);
+        if (hint != null)
+        {
+            PrintHintThrottled(hint);
+        }
+
+        return result;
+    }
+
+    /// <summary>查詢目前任務。<b>純查詢，不印任何東西。</b></summary>
+    /// <param name="hint">
+    /// 不是 <see langword="null"/> 時代表「有一則要給使用者看的提示」，由呼叫端決定什麼時候印
+    /// （持鎖的呼叫端請收進延後清單）。實際輸出走 <see cref="PrintHintThrottled"/>，那裡有去重。
+    /// </param>
+    public QuestReference GetCurrentQuestWithHint(bool allowNewMsq, out string? hint)
+    {
+        hint = null;
         QuestReference internalQuest = GetCurrentQuestInternal(allowNewMsq);
         (ElementId? currentQuest, byte sequence, MainScenarioQuestState questState) = internalQuest;
         PlayerState* playerState = PlayerState.Instance();
@@ -120,15 +143,65 @@ internal sealed unsafe class QuestFunctions
             // quests that use white wolf gate, finish 'broadening horizons' to unlock it
             if (!_aetheryteFunctions.IsAetheryteUnlocked(EAetheryteLocation.GridaniaBlueBadgerGate))
             {
-                _chatGui.Print("This quest uses the White Wolf Gate, which requires that you unlock all aethernet shards in Gridania.\n" +
+                hint =
+                    "This quest uses the White Wolf Gate, which requires that you unlock all aethernet shards in Gridania.\n" +
                                "This should have happened as part of the quest \"Close To Home\" if starting in Gridania, or \"The Ul'dahn/Lominsan Envoy\" for the other cities.\n" +
-                               "Please unlock the aethernet shards, or complete the current quest sequence manually before continuing.");
+                               "Please unlock the aethernet shards, or complete the current quest sequence manually before continuing.";
             }
             QuestId broadeningHorizons = new(802);
             return new(broadeningHorizons, QuestManager.GetQuestSequence(broadeningHorizons.Value), questState);
         }
 
         return internalQuest;
+    }
+
+    /// <summary>同一則提示 <see cref="HintIntervalMs"/> 毫秒內最多印一次。</summary>
+    /// <remarks>
+    /// 🔴 出身：這一則提示原本寫在 <see cref="GetCurrentQuestWithHint"/> 裡面，而那一支從
+    /// <c>QuestController</c> 每一幀的輪詢與偵錯視窗的每一幀繪製都會被呼叫到 ——
+    /// 條件成立時等於<b>每幀印一行</b>，會直接洗掉使用者的聊天視窗。
+    /// <para>
+    /// 🔴 自帶字典＋自己的鎖，刻意<b>不用</b> ECommons 的 <c>EzThrottler</c>：那是整個外掛共用的
+    /// 靜態 <c>Dictionary</c> 且零同步，而這條路徑從 framework 執行緒與繪製執行緒都進得來。
+    /// 🔴 鎖內只碰字典 —— 不寫記錄、不做 I/O、不輸出聊天。
+    /// </para>
+    /// </remarks>
+    public void PrintHintThrottled(string hint)
+    {
+        if (!ShouldPrintHint(hint))
+        {
+            return;
+        }
+
+        _chatGui.Print(hint);
+    }
+
+    /// <summary>同一則提示的重印間隔。</summary>
+    private const long HintIntervalMs = 60000;
+
+    /// <summary>節流表上限，避免提示內容意外發散時無限成長。</summary>
+    private const int MaxTrackedHints = 32;
+
+    private readonly Dictionary<string, long> _hintTimes = [];
+
+    private bool ShouldPrintHint(string hint)
+    {
+        long now = Environment.TickCount64;
+        lock(_hintTimes)
+        {
+            if (_hintTimes.TryGetValue(hint, out long last) && now - last < HintIntervalMs)
+            {
+                return false;
+            }
+
+            if (_hintTimes.Count >= MaxTrackedHints && !_hintTimes.ContainsKey(hint))
+            {
+                _hintTimes.Clear();
+            }
+
+            _hintTimes[hint] = now;
+            return true;
+        }
     }
 
     public QuestReference GetCurrentQuestInternal(bool allowNewMsq)
@@ -1115,12 +1188,6 @@ internal sealed unsafe class QuestFunctions
         return ExpArrayIndexUtils.IsInRange(classJobRow.ExpArrayIndex, classJobLevels.Length, (uint)classJob,
                    _logger)
                && classJobLevels[classJobRow.ExpArrayIndex] > 0;
-    }
-
-    public bool IsJobUnlocked(Job classJob)
-    {
-        ClassJob classJobRow = _dataManager.GetExcelSheet<ClassJob>().GetRow((uint)classJob);
-        return IsClassJobUnlocked((Job)classJobRow.ClassJobParent.RowId);
     }
 
     public GrandCompany GetGrandCompany()

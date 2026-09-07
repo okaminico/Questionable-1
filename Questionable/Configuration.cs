@@ -134,6 +134,17 @@ internal sealed class Configuration : IPluginConfiguration
         public bool StartMinimized { get; set; }
         public bool OpenEditor { get; set; }
         public bool NamazuPreferCraft { get; set; }
+
+        /// <summary>
+        /// 接任務時自動開啟背包裡的任務獎勵寶箱。
+        /// </summary>
+        /// <remarks>
+        /// 🔴 <b>預設關，而且刻意不套「紅線外預設自動」那條</b>：寶箱沒有「已解鎖」的概念
+        /// （<c>CofferReward.IsUnlocked()</c> 恆為 false），而本 fork 還沒有上游那個
+        /// 黑名單設定，所以開了就沒有辦法排除想留著不開的箱子。台服 7.20 實查符合條件的
+        /// 任務獎勵寶箱有 236 件。要開請使用者自己在設定頁勾。
+        /// </remarks>
+        public bool AutoRedeemCoffers { get; set; }
     }
 
     internal enum EGearsetUpdateSource

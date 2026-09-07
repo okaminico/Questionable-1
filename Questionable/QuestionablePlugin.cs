@@ -166,6 +166,7 @@ public sealed class QuestionablePlugin : IDalamudPlugin
         serviceCollection.AddSingleton<JournalData>();
         serviceCollection.AddSingleton<QuestData>();
         serviceCollection.AddSingleton<TerritoryData>();
+        serviceCollection.AddSingleton<IpcFrameworkGate>();
         serviceCollection.AddSingleton<NavmeshIpc>();
         serviceCollection.AddSingleton<LifestreamIpc>();
         serviceCollection.AddSingleton<ArtisanIpc>();

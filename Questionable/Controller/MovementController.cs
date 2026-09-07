@@ -78,6 +78,67 @@ internal sealed class MovementController
     }
 
     public bool IsPathfinding => _pathfindTask is { IsCompleted: false };
+
+    /// <summary><see cref="IsPathRunning"/> 的每幀快照，見 <see cref="RefreshNavmeshSnapshot"/>。</summary>
+    private volatile bool _pathRunningSnapshot;
+
+    /// <summary><see cref="IsPathfinding"/> 的每幀快照，見 <see cref="RefreshNavmeshSnapshot"/>。</summary>
+    private volatile bool _pathfindingSnapshot;
+
+    /// <summary>
+    /// 「vnavmesh 現在有沒有在跑路徑」的<b>快照</b>——讀這個不會打 IPC。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 <b>存在的理由</b>：<see cref="IsPathRunning"/> 的 getter 是一次跨外掛 IPC
+    /// （<c>NavmeshIpc._pathIsRunning.InvokeFunc()</c>）。<c>QuestController.UpdateCurrentQuestLocked</c>
+    /// 在<b>持有 <c>_progressLock</c> 的時候</b>讀它，等於在我們每一幀都會拿的鎖裡面跑 vnavmesh 的碼，
+    /// 也就是把對方的鎖排在我們的鎖後面。
+    /// <para>
+    /// ⚠️ 它是<b>屬性</b>不是方法呼叫，所以 <c>lock_io_scan.py</c> 的呼叫圖看不到它——
+    /// 那支工具跟的是 <c>Name(</c> 形狀的呼叫點，getter 沒有括號。這一筆是人工逐行讀出來的。
+    /// </para>
+    /// <para>
+    /// 📌 新鮮度：<c>DalamudInitializer.FrameworkUpdate</c> 的順序是
+    /// <c>UpdateLease()</c> → <b><see cref="RefreshNavmeshSnapshot"/>()</b> →
+    /// <c>_partyWatchDog.Update()</c> → <c>_questController.Update()</c> →
+    /// <c>_movementController.Update()</c>
+    /// ⇒ <b>QuestController 讀到的是同一幀剛取樣的值</b>，不是上一幀的。
+    /// 🔴 那一行必須留在 <c>_questController.Update()</c> <b>之前</b>；被移到後面的話語意會退化成
+    /// 「晚一幀」（仍然安全，只是舊一格），而不是壞掉。
+    /// </para>
+    /// <para>
+    /// 📌 幀內一致性：<see cref="Stop"/> 與 <see cref="ResetPathfinding"/> 會<b>當場</b>把快照
+    /// 設回 <see langword="false"/>（純本機寫入、不打 IPC），所以「鎖內停止移動之後再判斷還在不在
+    /// 移動」的結果與改動前相同——不會因為改讀快照而卡在「Path is running」。
+    /// 反過來，開始尋路／開始移動時也當場設成 <see langword="true"/>。
+    /// </para>
+    /// </remarks>
+    public bool IsPathRunningSnapshot => _pathRunningSnapshot;
+
+    /// <inheritdoc cref="IsPathRunningSnapshot"/>
+    public bool IsPathfindingSnapshot => _pathfindingSnapshot;
+
+    /// <summary>
+    /// 每幀取樣一次 vnavmesh 的路徑狀態。<b>只能在 framework 執行緒、而且不持有任何鎖時呼叫。</b>
+    /// </summary>
+    /// <remarks>
+    /// 🔴 <b>刻意不擲例外</b>：它排在 <c>_questController.Update()</c> 之前，而
+    /// <c>DalamudInitializer.FrameworkUpdate</c> 裡任何一支擲例外都會讓它之後的程式碼當幀不執行。
+    /// </remarks>
+    public void RefreshNavmeshSnapshot()
+    {
+        try
+        {
+            _pathRunningSnapshot = IsPathRunning;
+        }
+        catch(Exception e)
+        {
+            _pathRunningSnapshot = false;
+            logger.LogDebug(e, "Could not read navmesh path state, assuming no path is running");
+        }
+
+        _pathfindingSnapshot = IsPathfinding;
+    }
     public DestinationData? Destination { get; set; }
     public DateTime MovementStartedAt { get; private set; } = DateTime.Now;
     public int BuiltNavmeshPercent => navmeshIpc.GetBuildProgress();
@@ -139,6 +200,7 @@ internal sealed class MovementController
                         _pathfindTask.Result.Select(x => x.ToString("G", CultureInfo.InvariantCulture))));
 
                 navmeshIpc.MoveTo(navPoints, Destination.IsFlying);
+                _pathRunningSnapshot = true;
                 MovementStartedAt = DateTime.Now;
 
                 ResetPathfinding();
@@ -334,6 +396,7 @@ internal sealed class MovementController
 
         _pathfindTask =
             navmeshIpc.Pathfind(startPosition, to, fly, _cancellationTokenSource.Token);
+        _pathfindingSnapshot = true;
         //      float range = stopDistance ?? 2.8f;
         //      if (!_navmeshIpc.SimplePathfindAndMoveCloseTo(to, fly, range))
         //      {
@@ -360,6 +423,7 @@ internal sealed class MovementController
 
         logger.LogInformation("Moving to {Destination}", Destination);
         navmeshIpc.MoveTo(to, fly);
+        _pathRunningSnapshot = true;
         MovementStartedAt = DateTime.Now;
     }
 
@@ -379,6 +443,7 @@ internal sealed class MovementController
         }
 
         _pathfindTask = null;
+        _pathfindingSnapshot = false;
     }
 
     private bool RecalculateNavmesh(List<Vector3> navPoints, Vector3 start)
@@ -481,17 +546,66 @@ internal sealed class MovementController
         }
     }
 
-    public void Stop()
+    /// <summary>停止移動。</summary>
+    /// <param name="defer">
+    /// 不是 <see langword="null"/> 時，<b>純副作用的那兩段</b>——對 vnavmesh 打 <c>Path.Stop</c>、
+    /// 以及關掉自動前進——交給它安排；狀態重設（<see cref="ResetPathfinding"/>、
+    /// <see cref="Destination"/>、快照）仍然當場同步做。
+    /// </param>
+    /// <remarks>
+    /// 🔴 <b>為什麼要拆</b>：<c>QuestController.ExecuteNextStep</c> 是持著 <c>_progressLock</c>
+    /// 呼叫這一支的，而 <c>navmeshIpc.Stop()</c> 是跨外掛 IPC（CallGate＝直接方法呼叫）
+    /// ⇒ 在鎖裡打過去等於把 vnavmesh 的鎖排在我們的鎖後面，對方日後長出任何一條回頭呼叫
+    /// Questionable 的路徑就是死鎖。
+    /// <para>
+    /// 🔴 <b>為什麼不能整支延後</b>：<see cref="ResetPathfinding"/> 與 <c>Destination = null</c>
+    /// 會讓「還在不在尋路／移動」翻成 <see langword="false"/>，而<b>同一個鎖裡</b>後面就在判斷
+    /// 這兩件事。整支延後的話那兩個判斷會翻面、提早 <c>return</c>——那是縮小引擎的原子性，
+    /// 不是等價改寫。
+    /// </para>
+    /// <para>
+    /// ⚠️ <c>InputManager.IsAutoRunning()</c> 讀的是遊戲原生狀態、而且決定要不要做事
+    /// ⇒ 那個判斷留在原地，延後的只有「寫一行記錄＋送一個指令」。
+    /// </para>
+    /// <para>
+    /// 📌 <paramref name="defer"/> 不給的時候（UI、指令、<see cref="Dispose"/>、本類別內部的
+    /// 十幾個呼叫點）行為逐字不變：就地依序執行。
+    /// </para>
+    /// </remarks>
+    public void Stop(Action<Action>? defer = null)
     {
-        navmeshIpc.Stop();
+        if (defer != null)
+        {
+            defer(navmeshIpc.Stop);
+        }
+        else
+        {
+            navmeshIpc.Stop();
+        }
+
         ResetPathfinding();
         Destination = null;
 
+        // 我們已經決定停下來了 ⇒ 快照當場歸零，不必等下一幀重新取樣。
+        _pathRunningSnapshot = false;
+
         if (InputManager.IsAutoRunning())
         {
-            logger.LogInformation("Turning off auto-move [stop]");
-            chatFunctions.ExecuteCommand("/automove off");
+            if (defer != null)
+            {
+                defer(TurnOffAutoMove);
+            }
+            else
+            {
+                TurnOffAutoMove();
+            }
         }
+    }
+
+    private void TurnOffAutoMove()
+    {
+        logger.LogInformation("Turning off auto-move [stop]");
+        chatFunctions.ExecuteCommand("/automove off");
     }
 
     public sealed record DestinationData

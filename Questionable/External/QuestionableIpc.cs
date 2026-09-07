@@ -17,6 +17,35 @@ using System.Linq;
 using System.Numerics;
 namespace Questionable.External;
 
+/// <remarks>
+/// 🔴 <b>這裡的每一個端點都跑在呼叫端外掛的執行緒上</b>（CallGate＝直接方法呼叫），
+/// 所以 21 支全部包上 <see cref="IpcFrameworkGate"/>：已經在主執行緒上呼叫時就地執行、
+/// 行為逐字不變，從別的執行緒進來才會被交回主執行緒。逐支的理由：
+/// <list type="bullet">
+/// <item><c>StartQuest</c>／<c>StartSingleQuest</c>／<c>StartGathering</c>／
+/// <c>StartGatheringComplex</c>／<c>Stop</c>：同步走到 <c>QuestController.ExecuteNextStep</c>
+/// 與 <c>Stop</c>，那裡有 <c>TaskQueue._tasks</c>（裸 <c>List</c>）的寫入、
+/// <c>_objectTable[0]</c> 的原生讀取、以及 <c>StatusManager.ExecuteStatusOff</c>。</item>
+/// <item><c>ImportQuestPriority</c>／<c>AddQuestPriority</c>／<c>InsertQuestPriority</c>／
+/// <c>ClearQuestPriority</c>／<c>ExportQuestPriority</c>：碰 <c>ManualPriorityQuests</c>，
+/// 那是裸 <c>List</c>，而 UI 每幀在繪製執行緒上迭代它。</item>
+/// <item><c>IsQuestLocked</c>／<c>IsQuestComplete</c>／<c>IsReadyToAcceptQuest</c>／
+/// <c>IsQuestAccepted</c>／<c>IsQuestUnobtainable</c>／<c>GetCurrentQuestId</c>／
+/// <c>GetCurrentStepData</c>／<c>GetCurrentlyActiveEventQuests</c>：查詢，但同步讀
+/// <c>QuestManager.Instance()-&gt;</c>（<c>GetCurrentQuestId</c> 與 <c>GetCurrentStepData</c>
+/// 經由 <c>CurrentQuestDetails</c> -&gt; <c>IsReadyToAcceptQuest</c>）。</item>
+/// <item><c>IsRunning</c>：讀 <c>TaskQueue</c> 的裸 <c>List</c> 計數。</item>
+/// <item><c>RedoLookup</c>／<c>RedoLookupIndex</c>：讀 Lumina 的 <c>ExcelSheet</c>
+/// （內部有列快取，沒有保證執行緒安全）。</item>
+/// </list>
+/// <para>
+/// 📌 <b>回傳語意沒有改</b>：閘門逾時時回的「不可用」值，每一個都是該端點原本失敗路徑上
+/// 就會回的值（<c>IsQuestLocked</c> 回 <see langword="true"/>＝當作鎖著，其餘查詢回
+/// <see langword="false"/>／<see langword="null"/>／空字串）。⚠️ 唯一的例外是四支
+/// 「優先任務」端點：它們原本無論如何都回 <see langword="true"/>，逾時時會回
+/// <see langword="false"/>——那才是誠實的「沒做到」。
+/// </para>
+/// </remarks>
 internal sealed class QuestionableIpc : IDisposable
 {
     private const string IpcIsRunning = "Questionable.IsRunning";
@@ -54,6 +83,8 @@ internal sealed class QuestionableIpc : IDisposable
     private readonly ICallGateProvider<string, bool> _isQuestUnobtainable;
     private readonly ICallGateProvider<string, bool> _isReadyToAcceptQuest;
 
+    private readonly IpcFrameworkGate _gate;
+
     private readonly ICallGateProvider<bool> _isRunning;
     private readonly ILogger<QuestionableIpc> _logger;
 
@@ -76,80 +107,99 @@ internal sealed class QuestionableIpc : IDisposable
         QuestFunctions questFunctions,
         PriorityWindow priorityWindow,
         ILogger<QuestionableIpc> logger,
-        IDalamudPluginInterface pluginInterface)
+        IDalamudPluginInterface pluginInterface,
+        IpcFrameworkGate gate)
     {
         _questController = questController;
         _questRegistry = questRegistry;
         _questFunctions = questFunctions;
         _logger = logger;
+        _gate = gate;
 
         _isRunning = pluginInterface.GetIpcProvider<bool>(IpcIsRunning);
-        _isRunning.RegisterFunc(() =>
-            questController.AutomationType != QuestController.EAutomationType.Manual || questController.IsRunning);
+        _isRunning.RegisterFunc(() => _gate.Get(IpcIsRunning,
+            () => questController.AutomationType != QuestController.EAutomationType.Manual || questController.IsRunning,
+            false));
 
         _getCurrentQuestId = pluginInterface.GetIpcProvider<string?>(IpcGetCurrentQuestId);
-        _getCurrentQuestId.RegisterFunc(() => questController.CurrentQuest?.Quest.Id.ToString());
+        _getCurrentQuestId.RegisterFunc(() => _gate.Get<string?>(IpcGetCurrentQuestId,
+            () => questController.CurrentQuest?.Quest.Id.ToString(), null));
 
         _getCurrentStepData = pluginInterface.GetIpcProvider<StepData?>(IpcGetCurrentStepData);
-        _getCurrentStepData.RegisterFunc(GetStepData);
+        _getCurrentStepData.RegisterFunc(() => _gate.Get<StepData?>(IpcGetCurrentStepData, GetStepData, null));
 
         _getCurrentlyActiveEventQuests =
             pluginInterface.GetIpcProvider<List<string>>(IpcGetCurrentlyActiveEventQuests);
-        _getCurrentlyActiveEventQuests.RegisterFunc(() =>
-            [.. eventInfoComponent.GetCurrentlyActiveEventQuests().Select(q => q.ToString())]);
+        _getCurrentlyActiveEventQuests.RegisterFunc(() => _gate.Get<List<string>>(IpcGetCurrentlyActiveEventQuests,
+            () => [.. eventInfoComponent.GetCurrentlyActiveEventQuests().Select(q => q.ToString())], []));
 
         _startQuest = pluginInterface.GetIpcProvider<string, bool>(IpcStartQuest);
-        _startQuest.RegisterFunc(questId => StartQuest(questId, false));
+        _startQuest.RegisterFunc(questId => _gate.Get(IpcStartQuest, () => StartQuest(questId, false), false));
 
         _startSingleQuest = pluginInterface.GetIpcProvider<string, bool>(IpcStartSingleQuest);
-        _startSingleQuest.RegisterFunc(questId => StartQuest(questId, true));
+        _startSingleQuest.RegisterFunc(questId =>
+            _gate.Get(IpcStartSingleQuest, () => StartQuest(questId, true), false));
 
         _isQuestLocked = pluginInterface.GetIpcProvider<string, bool>(IpcIsQuestLocked);
-        _isQuestLocked.RegisterFunc(IsQuestLocked);
+        // ⚠️ 不可用時回 true：與這一支自己「查不到任務就當作鎖著」的既有預設一致。
+        _isQuestLocked.RegisterFunc(questId => _gate.Get(IpcIsQuestLocked, () => IsQuestLocked(questId), true));
 
         _isQuestComplete = pluginInterface.GetIpcProvider<string, bool>(IpcIsQuestComplete);
-        _isQuestComplete.RegisterFunc(IsQuestComplete);
+        _isQuestComplete.RegisterFunc(questId =>
+            _gate.Get(IpcIsQuestComplete, () => IsQuestComplete(questId), false));
 
         _isReadyToAcceptQuest = pluginInterface.GetIpcProvider<string, bool>(IpcIsReadyToAcceptQuest);
-        _isReadyToAcceptQuest.RegisterFunc(IsReadyToAcceptQuest);
+        _isReadyToAcceptQuest.RegisterFunc(questId =>
+            _gate.Get(IpcIsReadyToAcceptQuest, () => IsReadyToAcceptQuest(questId), false));
 
         _isQuestAccepted = pluginInterface.GetIpcProvider<string, bool>(IpcIsQuestAccepted);
-        _isQuestAccepted.RegisterFunc(IsQuestAccepted);
+        _isQuestAccepted.RegisterFunc(questId =>
+            _gate.Get(IpcIsQuestAccepted, () => IsQuestAccepted(questId), false));
 
         _isQuestUnobtainable = pluginInterface.GetIpcProvider<string, bool>(IpcIsQuestUnobtainable);
-        _isQuestUnobtainable.RegisterFunc(IsQuestUnobtainable);
+        _isQuestUnobtainable.RegisterFunc(questId =>
+            _gate.Get(IpcIsQuestUnobtainable, () => IsQuestUnobtainable(questId), false));
 
         _importQuestPriority = pluginInterface.GetIpcProvider<string, bool>(IpcImportQuestPriority);
-        _importQuestPriority.RegisterFunc(ImportQuestPriority);
+        _importQuestPriority.RegisterFunc(encoded =>
+            _gate.Get(IpcImportQuestPriority, () => ImportQuestPriority(encoded), false));
 
         _addQuestPriority = pluginInterface.GetIpcProvider<string, bool>(IpcAddQuestPriority);
-        _addQuestPriority.RegisterFunc(AddQuestPriority);
+        _addQuestPriority.RegisterFunc(questId =>
+            _gate.Get(IpcAddQuestPriority, () => AddQuestPriority(questId), false));
 
         _clearQuestPriority = pluginInterface.GetIpcProvider<bool>(IpcClearQuestPriority);
-        _clearQuestPriority.RegisterFunc(ClearQuestPriority);
+        _clearQuestPriority.RegisterFunc(() => _gate.Get(IpcClearQuestPriority, ClearQuestPriority, false));
 
         _insertQuestPriority = pluginInterface.GetIpcProvider<int, string, bool>(IpcInsertQuestPriority);
-        _insertQuestPriority.RegisterFunc(InsertQuestPriority);
+        _insertQuestPriority.RegisterFunc((index, questId) =>
+            _gate.Get(IpcInsertQuestPriority, () => InsertQuestPriority(index, questId), false));
 
         _exportQuestPriority = pluginInterface.GetIpcProvider<string>(IpcExportQuestPriority);
-        _exportQuestPriority.RegisterFunc(priorityWindow.EncodeQuestPriority);
+        _exportQuestPriority.RegisterFunc(() =>
+            _gate.Get(IpcExportQuestPriority, priorityWindow.EncodeQuestPriority, string.Empty));
 
         _startGathering = pluginInterface.GetIpcProvider<uint, uint, byte, int, bool>(IpcStartGathering);
-        _startGathering.RegisterFunc(StartGathering);
+        _startGathering.RegisterFunc((npcId, itemId, classJob, quantity) =>
+            _gate.Get(IpcStartGathering, () => StartGathering(npcId, itemId, classJob, quantity), false));
 
         _startGatheringComplex = pluginInterface.GetIpcProvider<uint, uint, byte, int, ushort, bool>(IpcStartGatheringComplex);
-        _startGatheringComplex.RegisterFunc(StartGatheringComplex);
+        _startGatheringComplex.RegisterFunc((npcId, itemId, classJob, quantity, collectability) =>
+            _gate.Get(IpcStartGatheringComplex,
+                () => StartGatheringComplex(npcId, itemId, classJob, quantity, collectability), false));
 
         _stop = pluginInterface.GetIpcProvider<string, bool>(IpcStop);
-        _stop.RegisterFunc(Stop);
+        _stop.RegisterFunc(label => _gate.Get(IpcStop, () => Stop(label), false));
 
         _redoUtil = new();
 
         _redoLookup = pluginInterface.GetIpcProvider<uint, string>(IpcRedoLookup);
-        _redoLookup.RegisterFunc(RedoLookup);
+        _redoLookup.RegisterFunc(questId =>
+            _gate.Get(IpcRedoLookup, () => RedoLookup(questId), string.Empty));
 
         _redoLookupIndex = pluginInterface.GetIpcProvider<uint, Tuple<string, int>>(IpcRedoLookupIndex);
-        _redoLookupIndex.RegisterFunc(RedoLookupIndex);
+        _redoLookupIndex.RegisterFunc(questId =>
+            _gate.Get(IpcRedoLookupIndex, () => RedoLookupIndex(questId), new Tuple<string, int>(string.Empty, -1)));
     }
 
     public void Dispose()
@@ -174,6 +224,7 @@ internal sealed class QuestionableIpc : IDisposable
         _startGatheringComplex.UnregisterFunc();
         _stop.UnregisterFunc();
         _redoLookup.UnregisterFunc();
+        _redoLookupIndex.UnregisterFunc();
     }
 
     private bool StartQuest(string questId, bool single)

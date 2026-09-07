@@ -18,6 +18,7 @@ using Questionable.External;
 using Questionable.Functions;
 using Questionable.Model;
 using Questionable.Model.Questing;
+using Questionable.Utils;
 using Questionable.Windows.ConfigComponents;
 using System;
 using System.Collections.Generic;
@@ -25,6 +26,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 using Quest = Questionable.Model.Quest;
 
 namespace Questionable.Controller;
@@ -54,6 +56,9 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     private readonly AlliedSocietyQuestFunctions _alliedSocietyQuestFunctions;
     private readonly IChatGui _chatGui;
     private readonly IClientState _clientState;
+
+    /// <summary>只用來把聊天輸出釘回 framework 執行緒，見 <see cref="ChatGuiExtensions"/>。</summary>
+    private readonly IFramework _framework;
     private readonly CombatController _combatController;
     private readonly ICondition _condition;
     private readonly Configuration _configuration;
@@ -67,6 +72,23 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     private readonly IObjectTable _objectTable;
 
     private readonly object _progressLock = new();
+
+    /// <summary>
+    /// 目前這條執行緒「持有 <see cref="_progressLock"/> 期間」要把副作用收到哪一份清單。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 <b>刻意是 <c>[ThreadStatic]</c></b>：<see cref="Stop(string, bool)"/>／
+    /// <see cref="SetNextQuest"/> 這些方法同時也被 UI（繪製執行緒）與 IPC（呼叫端的執行緒）
+    /// 呼叫，而那些呼叫<b>沒有</b>持鎖。做成一般欄位的話，framework 執行緒在鎖裡設好的清單
+    /// 會被別條執行緒看見，於是別人的記錄被塞進我們的 <c>List</c>（裸集合，並行插入弄壞的是
+    /// 集合本身），而且會在錯誤的時間點才寫出去。
+    /// <para>
+    /// 🔑 另外還要 <see cref="Monitor.IsEntered"/> 才算數：這個欄位在取鎖<b>之前</b>就設好，
+    /// 取鎖前與放鎖後的那一小段仍然是「就地執行」，行為與改動前逐字相同。
+    /// </para>
+    /// </remarks>
+    [ThreadStatic]
+    private static List<PendingLog>? _deferralScope;
     private readonly QuestData _questData;
     private readonly QuestFunctions _questFunctions;
     private readonly QuestRegistry _questRegistry;
@@ -118,6 +140,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         QuestData questData,
         IKeyState keyState,
         IChatGui chatGui,
+        IFramework framework,
         ICondition condition,
         IToastGui toastGui,
         Configuration configuration,
@@ -142,6 +165,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         _questData = questData;
         _keyState = keyState;
         _chatGui = chatGui;
+        _framework = framework;
         _condition = condition;
         _toastGui = toastGui;
         _configuration = configuration;
@@ -248,18 +272,159 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     public event AutomationTypeChangedEventHandler? AutomationTypeChanged;
 
+    /// <summary>
+    /// 持 <see cref="_progressLock"/> 時要做、但不能在鎖裡做的一件事：一行輸出，或一段副作用。
+    /// <c>ILogger</c> 最後落到 Dalamud 的 Serilog sink，那邊自己有鎖、還會做檔案 I/O ——
+    /// 在鎖裡呼叫等於把 <c>_progressLock</c> 的持有時間綁在磁碟上。跨外掛的 IPC 更糟：
+    /// CallGate 是直接方法呼叫，在鎖裡打過去等於把對方的鎖排在我們的鎖後面。
+    /// 所以鎖內只把要做的事記下來，出鎖之後才真的做。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 <b>記錄那一種刻意是純資料</b>（等級／訊息模板／參數／例外），寫入放在
+    /// <see cref="EmitPending"/>；<paramref name="Args"/> 在加進清單的那一刻就求值了，
+    /// 所以延後寫出去的內容與「當場寫」逐字相同。
+    /// <para>
+    /// <paramref name="ChatMessage"/> 不是 <see langword="null"/> 時代表這一則是要印到聊天視窗的
+    /// （<c>_chatGui.Print</c>）而不是寫進記錄檔；三種放在同一個清單裡，原本的先後順序才保得住。
+    /// </para>
+    /// </remarks>
+    /// <param name="SideEffect">
+    /// 不是 <see langword="null"/> 時，這一則不是輸出而是<b>一段延到出鎖之後才執行的副作用</b>
+    /// —— 跨外掛 IPC（<c>TataruPraiseIpc.NotifyNeedHelp</c>），或需要重建 <c>BeginScope</c>
+    /// 前綴的記錄。一律經由 <see cref="RunOrDefer"/> 加進來。
+    /// </param>
+    private readonly record struct PendingLog(
+        LogLevel Level,
+        string Template,
+        object?[] Args,
+        string? ChatMessage,
+        Exception? Exception = null,
+        System.Action? SideEffect = null);
+
+    /// <summary>把鎖內記下來的訊息寫出去。<b>必須在 <see cref="_progressLock"/> 放掉之後才呼叫。</b></summary>
+    private void EmitPending(List<PendingLog> pending)
+    {
+        foreach(PendingLog entry in pending)
+        {
+            if (entry.SideEffect is { } sideEffect)
+            {
+                // 🔴 一則失敗不可以讓後面的都不做：延後的清單裡可能同時有「停止移動」與
+                //    「請塔塔露喊一句」，而它們彼此無關。
+                try
+                {
+                    sideEffect();
+                }
+                catch(Exception e)
+                {
+                    _logger.LogError(e, "Deferred side effect failed");
+                }
+            }
+            else if (entry.ChatMessage is { } chatMessage)
+            {
+                _chatGui.Print(chatMessage, CommandHandler.MessageTag, CommandHandler.TagColor);
+            }
+            else
+            {
+                _logger.Log(entry.Level, entry.Exception, entry.Template, entry.Args);
+            }
+        }
+
+        pending.Clear();
+    }
+
+    /// <summary>
+    /// 現在是不是「持有 <see cref="_progressLock"/>、而且有人在收延後清單」。
+    /// </summary>
+    private bool TryGetDeferralScope([NotNullWhen(true)] out List<PendingLog>? pending)
+    {
+        pending = Monitor.IsEntered(_progressLock) ? _deferralScope : null;
+        return pending != null;
+    }
+
+    /// <summary>
+    /// 寫一行記錄；持著 <see cref="_progressLock"/> 時改成收進延後清單。
+    /// </summary>
+    /// <remarks>
+    /// 📌 <paramref name="args"/> 在<b>呼叫的那一刻</b>就求值了，所以延後寫出去的內容
+    /// 與改動前逐字相同（不會變成「出鎖之後才去讀 <c>CurrentQuest</c>」）。
+    /// </remarks>
+    private void LogOrDefer(LogLevel level, string template, params object?[] args)
+    {
+        LogOrDefer(level, null, template, args);
+    }
+
+    /// <inheritdoc cref="LogOrDefer(LogLevel, string, object?[])"/>
+    private void LogOrDefer(LogLevel level, Exception? exception, string template, params object?[] args)
+    {
+        if (TryGetDeferralScope(out List<PendingLog>? pending))
+        {
+            pending.Add(new PendingLog(level, template, args, null, exception));
+        }
+        else
+        {
+            _logger.Log(level, exception, template, args);
+        }
+    }
+
+    /// <summary>
+    /// 做一件事；持著 <see cref="_progressLock"/> 時改成收進延後清單，出鎖之後才做。
+    /// </summary>
+    /// <remarks>
+    /// 🔴 用在<b>跨外掛 IPC</b>（CallGate 是直接方法呼叫，會在我們的鎖裡面跑別的外掛的碼
+    /// ⇒ 對方日後長出任何一條回頭呼叫的路徑就是死鎖）與「要保留 <c>BeginScope</c> 前綴」的記錄。
+    /// <para>
+    /// ⚠️ 只適合<b>純副作用</b>：回傳值會在鎖裡被拿去分支的呼叫不可以用這一支。
+    /// </para>
+    /// <para>
+    /// 📌 沒有人在收延後清單時（不持鎖、或從 UI／IPC 進來）就<b>當場執行</b>，
+    /// 行為與改動前逐字相同。
+    /// </para>
+    /// </remarks>
+    private void RunOrDefer(System.Action action)
+    {
+        if (TryGetDeferralScope(out List<PendingLog>? pending))
+        {
+            pending.Add(new PendingLog(LogLevel.None, string.Empty, [], null, null, action));
+        }
+        else
+        {
+            action();
+        }
+    }
+
     public void Reload()
     {
-        lock(_progressLock)
+        // 見 <see cref="PendingLog"/>：這一行原本是鎖內的第一個敘述，訊息是常數、也不看任何
+        // 鎖保護的狀態 ⇒ 直接搬到取鎖之前。等級、文字、觸發條件與先後順序全部不變。
+        _logger.LogInformation("Reload, resetting curent quest progress");
+
+        // 🔴 檔案列舉、JSON 解析、驗證全部搬到 _progressLock 外面 —— 那把鎖每一個 framework tick
+        //    都會被 UpdateCurrentQuest 拿去，而原本這一整段是在它裡面跑的。序列化改由 QuestRegistry
+        //    自己那把「只在重新載入這條路徑上會被取」的閘門負責（卡住重試計時器在 framework 執行緒、
+        //    使用者按下重新載入在繪製執行緒，兩邊可以同時進來）。
+        QuestRegistry.ReloadBatch registryReload = _questRegistry.PrepareReload();
+        bool published = false;
+        try
         {
-            _logger.LogInformation("Reload, resetting curent quest progress");
+            lock(_progressLock)
+            {
+                ResetInternalState();
+                ResetAutoRefreshState();
 
-            ResetInternalState();
-            ResetAutoRefreshState();
-
-            _questRegistry.Reload();
-            _singlePlayerDutyConfigComponent.Reload();
-            _alliedSocietyQuestFunctions.Reload();
+                // 鎖裡只剩「把準備好的登錄換上去」這幾行常數時間的參照指派。
+                published = _questRegistry.PublishReload(registryReload);
+                _singlePlayerDutyConfigComponent.Reload();
+                _alliedSocietyQuestFunctions.Reload();
+            }
+        }
+        finally
+        {
+            // 🔴 記錄、Reloaded 事件、跨外掛的 IPC 廣播一律在鎖外：Reloaded 的訂閱端會再做一次完整的
+            //    檔案系統列舉，而 SendMessage 是同步跑在我們這條執行緒上的、別的外掛的碼。
+            // ⚠️ 有一處先後順序變了：Reloaded 事件與 IPC 廣播原本排在
+            //    SinglePlayerDutyConfigComponent.Reload() 之前，現在排在它之後。兩邊互不相依
+            //    （前者讀任務登錄、後者也讀任務登錄，都在替換之後），訂閱端看到的狀態只會更完整。
+            _questRegistry.EmitReloadSideEffects(registryReload, published);
         }
     }
 
@@ -370,9 +535,12 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             && CurrentQuest is { Sequence: 0, Step: 0 } or { Sequence: 0, Step: 255 }
             && DateTime.Now >= CurrentQuest.StepProgress.StartedAt.AddSeconds(15))
         {
+            // 見 <see cref="PendingLog"/>：原本是鎖內的第一個敘述，訊息是常數、也不看任何
+            // 鎖保護的狀態 ⇒ 搬到取鎖之前，先後順序完全不變。
+            _logger.LogWarning("Quest accept apparently didn't work out, resetting progress");
+
             lock(_progressLock)
             {
-                _logger.LogWarning("Quest accept apparently didn't work out, resetting progress");
                 CurrentQuest.SetStep(0);
             }
 
@@ -524,6 +692,32 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     private void UpdateCurrentQuest()
     {
+        List<PendingLog> pending = [];
+        List<PendingLog>? previousScope = _deferralScope;
+        _deferralScope = pending;
+        try
+        {
+            UpdateCurrentQuestLocked(pending);
+        }
+        finally
+        {
+            _deferralScope = previousScope;
+            // 出鎖之後才寫（<c>lock</c> 自己的 <c>Monitor.Exit</c> 在內層的 finally，一定先跑）。
+            // ⚠️ 這個鎖裡還有別的元件（TaskCreator／MovementController／CombatController…）
+            // 自己在寫記錄，那些沒有被延後 ⇒ 這裡延後的幾行相對於它們會往後挪；
+            // 延後的這幾行彼此之間的先後順序不變。
+            EmitPending(pending);
+        }
+    }
+
+    /// <summary><see cref="UpdateCurrentQuest"/> 持鎖的那一段。</summary>
+    /// <remarks>
+    /// 🔴 這裡面持有 <see cref="_progressLock"/>：<b>不要直接呼叫 <c>_logger</c>、<c>_chatGui</c>，
+    /// 也不要直接打任何跨外掛的 IPC</b>。要寫的東西用 <c>pending.Add</c> 或 <see cref="LogOrDefer"/>，
+    /// 要做的副作用用 <see cref="RunOrDefer"/>，兩者都會等出鎖之後才真的發生。
+    /// </remarks>
+    private void UpdateCurrentQuestLocked(List<PendingLog> pending)
+    {
         lock(_progressLock)
         {
             DebugState = null;
@@ -565,8 +759,9 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
                 if (!canUseNextQuest)
                 {
-                    _logger.LogInformation("Next quest {QuestId} accepted or completed",
-                        NextQuest.Quest.Id);
+                    pending.Add(new PendingLog(LogLevel.Information,
+                        "Next quest {QuestId} accepted or completed",
+                        [NextQuest.Quest.Id], null));
 
                     if (AutomationType == EAutomationType.SingleQuestA)
                     {
@@ -574,7 +769,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                         AutomationType = EAutomationType.SingleQuestB;
                     }
 
-                    _logger.LogDebug("Started: {StartedQuest}", StartedQuest?.Quest.Id);
+                    pending.Add(new PendingLog(LogLevel.Debug, "Started: {StartedQuest}",
+                        [StartedQuest?.Quest.Id], null));
                     NextQuest = null;
                 }
             }
@@ -610,7 +806,16 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             }
             else
             {
-                (ElementId? currentQuestId, currentSequence, MainScenarioQuestState msqState) = _questFunctions.GetCurrentQuest(allowNewMsq: AutomationType != EAutomationType.SingleQuestB);
+                // 🔴 用不印東西的那一支：GetCurrentQuest 會直接 _chatGui.Print，而這裡持著 _progressLock。
+                //    提示收進延後清單、出鎖之後才印；去重（同一則 60 秒一次）在 PrintHintThrottled 裡面。
+                (ElementId? currentQuestId, currentSequence, MainScenarioQuestState msqState) =
+                    _questFunctions.GetCurrentQuestWithHint(allowNewMsq: AutomationType != EAutomationType.SingleQuestB,
+                        out string? questHint);
+                if (questHint != null)
+                {
+                    RunOrDefer(() => _questFunctions.PrintHintThrottled(questHint));
+                }
+
                 (ElementId, byte)? priorityQuestOption =
                     ManualPriorityQuests
                         .Where(x => _questFunctions.IsReadyToAcceptQuest(x.Id) || _questFunctions.IsQuestAccepted(x.Id))
@@ -637,7 +842,15 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                             return;
                         }
 
-                        _logger.LogInformation("No current quest, resetting data [CQI: {CurrrentQuestData}], [CQ: {QuestData}], [MSQ: {MsqData}]", _questFunctions.GetCurrentQuestInternal(true), _questFunctions.GetCurrentQuest(), _questFunctions.GetMainScenarioQuest());
+                        pending.Add(new PendingLog(LogLevel.Information,
+                            "No current quest, resetting data [CQI: {CurrrentQuestData}], [CQ: {QuestData}], [MSQ: {MsqData}]",
+                            [
+                                _questFunctions.GetCurrentQuestInternal(true),
+                                // ⚠️ 這裡刻意丟掉提示（out _）：上面那次查詢已經在同一幀收下它了，
+                                //    這一行只是診斷用的重查，再印一次是重複。
+                                _questFunctions.GetCurrentQuestWithHint(true, out _),
+                                _questFunctions.GetMainScenarioQuest()
+                            ], null));
                         StartedQuest = null;
                         Stop("Resetting current quest");
                     }
@@ -652,21 +865,25 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                         _questFunctions.IsQuestComplete(StartedQuest.Quest.Id))
                     {
                         ElementId questId = StartedQuest.Quest.Id;
-                        _logger.LogInformation("Reached stopping point (quest: {QuestId})", questId);
-                        _chatGui.Print($"Completed quest '{StartedQuest.Quest.Info.Name}', which is configured as a stopping point.", CommandHandler.MessageTag, CommandHandler.TagColor);
+                        pending.Add(new PendingLog(LogLevel.Information,
+                            "Reached stopping point (quest: {QuestId})", [questId], null));
+                        pending.Add(new PendingLog(LogLevel.None, string.Empty, [],
+                            $"Completed quest '{StartedQuest.Quest.Info.Name}', which is configured as a stopping point."));
                         StartedQuest = null;
                         Stop($"Stopping point [{questId}] reached");
                     }
                     else if (_questRegistry.TryGetQuest(currentQuestId, out Quest? quest))
                     {
                         _highlightObject.SetHighlight([]);
-                        _logger.LogInformation("New quest: {QuestName}", quest.Info.Name);
+                        pending.Add(new PendingLog(LogLevel.Information, "New quest: {QuestName}",
+                            [quest.Info.Name], null));
                         StartedQuest = new(quest, currentSequence);
 #if DEBUG
                         if (_configuration.Advanced.OpenEditor)
                         {
                             (bool success, string msg) = _questRegistry.OpenEditor(StartedQuest.Quest.Info);
-                            _logger.LogDebug($"OpenEditor {success}: {msg}");
+                            pending.Add(new PendingLog(LogLevel.Debug,
+                                $"OpenEditor {success}: {msg}", [], null));
                         }
 #endif
 
@@ -674,16 +891,17 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                         {
                             if (PlayerState.Instance()->CurrentLevel < quest.Info.Level)
                             {
-                                _logger.LogInformation(
+                                pending.Add(new PendingLog(LogLevel.Information,
                                     "Stopping automation, player level ({PlayerLevel}) < quest level ({QuestLevel}",
-                                    PlayerState.Instance()->CurrentLevel, quest.Info.Level);
+                                    [PlayerState.Instance()->CurrentLevel, quest.Info.Level], null));
                                 Stop("Quest level too high", true);
                             }
                             else
                             {
                                 if (AutomationType == EAutomationType.SingleQuestB)
                                 {
-                                    _logger.LogInformation("Single quest is finished");
+                                    pending.Add(new PendingLog(LogLevel.Information,
+                                        "Single quest is finished", [], null));
                                     AutomationType = EAutomationType.Manual;
                                 }
 
@@ -693,7 +911,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                     }
                     else if (StartedQuest != null)
                     {
-                        _logger.LogInformation("No active quest anymore? Not sure what happened...");
+                        pending.Add(new PendingLog(LogLevel.Information,
+                            "No active quest anymore? Not sure what happened...", [], null));
                         StartedQuest = null;
                         Stop("No active Quest", true);
                     }
@@ -719,13 +938,17 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                 return;
             }
 
-            if (_movementController.IsPathfinding)
+            // 🔴 讀的是快照不是即時值：IsPathRunning 的 getter 是一次跨外掛 IPC，而這裡持著
+            //    _progressLock。快照由 DalamudInitializer 在同一幀、進到這裡之前取樣，
+            //    而 MovementController.Stop()／ResetPathfinding() 會當場把它歸零
+            //    ⇒ 「鎖內停止移動之後再判斷」的結果與改動前相同。見 IsPathRunningSnapshot。
+            if (_movementController.IsPathfindingSnapshot)
             {
                 DebugState = "Pathfinding is running";
                 return;
             }
 
-            if (_movementController.IsPathRunning)
+            if (_movementController.IsPathRunningSnapshot)
             {
                 DebugState = "Path is running";
                 return;
@@ -804,31 +1027,78 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     public void IncreaseStepCount(ElementId? questId, int? sequence, bool shouldContinue = false)
     {
+        List<PendingLog> pending = [];
+        List<PendingLog>? previousScope = _deferralScope;
+        _deferralScope = pending;
+        bool stepped;
+        try
+        {
+            stepped = IncreaseStepCountLocked(questId, sequence, pending);
+        }
+        finally
+        {
+            _deferralScope = previousScope;
+            // 出鎖之後才寫，提早結束的路徑也會經過這裡。這個鎖裡沒有別的元件在寫記錄，
+            // 所以延後之後的先後順序與原本完全一樣；下面 ExecuteNextStep() 產生的記錄
+            // 仍然排在這幾行之後。
+            EmitPending(pending);
+        }
+
+        if (!stepped)
+        {
+            return;
+        }
+
+        using IDisposable? scope = _logger.BeginScope("IncStepCt");
+        if (shouldContinue && AutomationType != EAutomationType.Manual)
+        {
+            ExecuteNextStep();
+        }
+    }
+
+    /// <summary><see cref="IncreaseStepCount"/> 持鎖的那一段。</summary>
+    /// <param name="pending">要寫的記錄一律加進這裡，由呼叫端出鎖之後才寫出去。</param>
+    /// <returns>
+    /// <see langword="false"/>＝原本那兩個提早 <c>return</c> 的路徑（沒有真的增加步數）。
+    /// </returns>
+    /// <remarks>
+    /// 🔴 這裡面持有 <see cref="_progressLock"/>：不要直接呼叫 <c>_logger</c> 或 <c>_chatGui</c>。
+    /// <para>
+    /// <see cref="SkipLocked"/> 直接呼叫這一支（而不是 <see cref="IncreaseStepCount"/>），
+    /// 因為它自己已經持有同一把鎖——走公開那支的話，延後的記錄會在鎖還握著的時候被寫出去。
+    /// 它原本傳的 <c>shouldContinue</c> 就是預設的 <see langword="false"/>，
+    /// 所以少掉的那段（<c>BeginScope</c> ＋ 不會成立的 <c>if</c>）沒有任何可觀察的作用。
+    /// </para>
+    /// </remarks>
+    private bool IncreaseStepCountLocked(ElementId? questId, int? sequence, List<PendingLog> pending)
+    {
         lock(_progressLock)
         {
             (QuestSequence? seq, QuestStep? step, bool _) = GetNextStep();
             if (CurrentQuest == null || seq == null || step == null)
             {
-                _logger.LogWarning("Unable to retrieve next quest step, not increasing step count");
-                return;
+                pending.Add(new PendingLog(LogLevel.Warning,
+                    "Unable to retrieve next quest step, not increasing step count", [], null));
+                return false;
             }
 
             if (questId != null && CurrentQuest.Quest.Id != questId)
             {
-                _logger.LogWarning(
+                pending.Add(new PendingLog(LogLevel.Warning,
                     "Ignoring 'increase step count' for different quest (expected {ExpectedQuestId}, but we are at {CurrentQuestId}",
-                    questId, CurrentQuest.Quest.Id);
-                return;
+                    [questId, CurrentQuest.Quest.Id], null));
+                return false;
             }
 
             if (sequence != null && seq.Sequence != sequence.Value)
             {
-                _logger.LogWarning(
+                pending.Add(new PendingLog(LogLevel.Warning,
                     "Ignoring 'increase step count' for different sequence (expected {ExpectedSequence}, but we are at {CurrentSequence}",
-                    sequence, seq.Sequence);
+                    [sequence, seq.Sequence], null));
             }
 
-            _logger.LogInformation("Increasing step count from {CurrentValue}", CurrentQuest.Step);
+            pending.Add(new PendingLog(LogLevel.Information,
+                "Increasing step count from {CurrentValue}", [CurrentQuest.Step], null));
             if (CurrentQuest.Step + 1 < seq.Steps.Count)
             {
                 CurrentQuest.SetStep(CurrentQuest.Step + 1);
@@ -841,11 +1111,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             ResetAutoRefreshState();
         }
 
-        using IDisposable? scope = _logger.BeginScope("IncStepCt");
-        if (shouldContinue && AutomationType != EAutomationType.Manual)
-        {
-            ExecuteNextStep();
-        }
+        return true;
     }
 
     internal void AbandonQuest(QuestId questId)
@@ -896,7 +1162,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
         _taskQueue.Reset();
 
-        _combatController.Stop("ClearTasksInternal");
+        _combatController.Stop("ClearTasksInternal", RunOrDefer);
         _gatheringController.Stop("ClearTasksInternal");
     }
 
@@ -927,7 +1193,13 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         if (IsRunning || AutomationType != EAutomationType.Manual)
         {
             ClearTasksInternal();
-            _logger.LogInformation("Stopping automatic questing");
+
+            // 🔑 延後的時候把 BeginScope 一起帶過去重建，輸出的前綴與改動前逐字相同。
+            RunOrDefer(() =>
+            {
+                using IDisposable? deferredScope = _logger.BeginScope($"Stop/{label}");
+                _logger.LogInformation("Stopping automatic questing");
+            });
             AutomationType = EAutomationType.Manual;
             NextQuest = null;
             GatheringQuest = null;
@@ -948,7 +1220,11 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
             if (needsManualAttention)
             {
-                _tataruPraiseIpc.NotifyNeedHelp(label);
+                // 🔴 這是跨外掛 IPC（CallGate＝直接方法呼叫，對方的碼跑在我們這條執行緒上）。
+                //    UpdateCurrentQuest／Skip 是持著 _progressLock 進來的，在鎖裡打過去等於
+                //    把 TataruPraise 的鎖排在我們的鎖後面 —— 對方日後長出任何一條回頭呼叫
+                //    Questionable 的路徑就是死鎖。純通知、沒有回傳值 ⇒ 延到出鎖之後再打。
+                RunOrDefer(() => _tataruPraiseIpc.NotifyNeedHelp(label));
             }
         }
     }
@@ -969,8 +1245,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void StopAllDueToConditionFailed(string label, bool needsManualAttention)
     {
         Stop(label, needsManualAttention);
-        _movementController.Stop();
-        _combatController.Stop(label);
+        _movementController.Stop(RunOrDefer);
+        _combatController.Stop(label, RunOrDefer);
         _gatheringController.Stop(label);
     }
 
@@ -988,7 +1264,11 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             }
             else
             {
-                _logger.LogInformation("Couldn't execute next step during Stop() call");
+                RunOrDefer(() =>
+                {
+                    using IDisposable? deferredScope = _logger.BeginScope(label);
+                    _logger.LogInformation("Couldn't execute next step during Stop() call");
+                });
             }
 
             _lastTaskUpdate = DateTime.Now;
@@ -1012,7 +1292,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void SimulateQuest(Quest? quest, byte sequence, int step)
     {
         _highlightObject.SetHighlight([]);
-        _logger.LogInformation("SimulateQuest: {QuestId}", quest?.Id);
+        LogOrDefer(LogLevel.Information, "SimulateQuest: {QuestId}", quest?.Id);
         if (quest != null)
         {
             SimulatedQuest = new(quest, sequence, step);
@@ -1026,14 +1306,14 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void StopSimulate()
     {
         _highlightObject.SetHighlight([]);
-        _logger.LogInformation("StopSimulate");
+        LogOrDefer(LogLevel.Information, "StopSimulate");
         SimulatedQuest = null;
     }
 
     public void SetNextQuest(Quest? quest)
     {
         _highlightObject.SetHighlight([]);
-        _logger.LogInformation("NextQuest: {QuestId}", quest?.Id);
+        LogOrDefer(LogLevel.Information, "NextQuest: {QuestId}", quest?.Id);
         if (quest != null)
         {
             NextQuest = new(quest);
@@ -1047,7 +1327,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void SetGatheringQuest(Quest? quest)
     {
         _highlightObject.SetHighlight([]);
-        _logger.LogInformation("GatheringQuest: {QuestId}", quest?.Id);
+        LogOrDefer(LogLevel.Information, "GatheringQuest: {QuestId}", quest?.Id);
         if (quest != null)
         {
             GatheringQuest = new(quest);
@@ -1061,7 +1341,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void SetPendingQuest(QuestProgress? quest)
     {
         _highlightObject.SetHighlight([]);
-        _logger.LogInformation("PendingQuest: {QuestId}", quest?.Quest.Id);
+        LogOrDefer(LogLevel.Information, "PendingQuest: {QuestId}", quest?.Quest.Id);
         PendingQuest = quest;
     }
 
@@ -1091,6 +1371,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void Start(string label)
     {
         using IDisposable? scope = _logger.BeginScope($"Q/{label}");
+        RedeemRewardItems.ResetAttemptedItems();
         AutomationType = EAutomationType.Automatic;
         ExecuteNextStep();
     }
@@ -1098,6 +1379,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void StartGatheringQuest(string label)
     {
         using IDisposable? scope = _logger.BeginScope($"GQ/{label}");
+        RedeemRewardItems.ResetAttemptedItems();
         AutomationType = EAutomationType.GatheringOnly;
         ExecuteNextStep();
     }
@@ -1105,6 +1387,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void StartSingleQuest(string label)
     {
         using IDisposable? scope = _logger.BeginScope($"SQ/{label}");
+        RedeemRewardItems.ResetAttemptedItems();
         AutomationType = EAutomationType.SingleQuestA;
         ExecuteNextStep();
     }
@@ -1112,6 +1395,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
     public void StartSingleStep(string label)
     {
         using IDisposable? scope = _logger.BeginScope($"SS/{label}");
+        RedeemRewardItems.ResetAttemptedItems();
         AutomationType = EAutomationType.Manual;
         ExecuteNextStep();
     }
@@ -1122,7 +1406,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
         if (TryPickPriorityQuest())
         {
-            _logger.LogInformation("Using priority quest over current quest");
+            LogOrDefer(LogLevel.Information, "Using priority quest over current quest");
         }
 
         (QuestSequence? seq, QuestStep? step, bool createTasks) = GetNextStep();
@@ -1133,13 +1417,13 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                 CurrentQuestDetails?.Progress.Step == 255 &&
                 CurrentQuestDetails?.Type == ECurrentQuestType.Gathering)
             {
-                _logger.LogInformation("Completed delivery quest");
+                LogOrDefer(LogLevel.Information, "Completed delivery quest");
                 SetGatheringQuest(null);
                 Stop("Gathering quest complete");
             }
             else
             {
-                _logger.LogWarning(
+                LogOrDefer(LogLevel.Warning,
                     "Could not retrieve next quest step, not doing anything [{QuestId}, {Sequence}, {Step}]",
                     CurrentQuest?.Quest.Id, CurrentQuest?.Sequence, CurrentQuest?.Step);
             }
@@ -1150,13 +1434,20 @@ internal sealed class QuestController : MiniTaskController<QuestController>
             }
         }
 
-        _movementController.Stop();
-        _combatController.Stop("Execute next step");
+        // 🔴 傳 RunOrDefer 進去：這一支從 UpdateCurrentQuestLocked 進來時是持著 _progressLock 的，
+        //    對 vnavmesh 打 Path.Stop、關自動前進、以及那幾行記錄會被收進延後清單、出鎖之後才做；
+        //    狀態重設（ResetPathfinding／Destination／快照）仍然當場同步做。
+        //    不在鎖裡呼叫時 RunOrDefer 就地執行 ⇒ 行為逐字不變。
+        _movementController.Stop(RunOrDefer);
+        _combatController.Stop("Execute next step", RunOrDefer);
         _gatheringController.Stop("Execute next step");
 
         try
         {
-            foreach(ITask task in _taskCreator.CreateTasks(CurrentQuest.Quest, CurrentQuest.Sequence, seq, step))
+            // 🔴 傳 RunOrDefer 進去：工作清單仍然同步算好同步回來（回傳值語意不變），
+            //    只有 CreateTasks 裡的 4 個聊天輸出與 5 行記錄被收進延後清單、出鎖之後才寫。
+            foreach(ITask task in _taskCreator.CreateTasks(CurrentQuest.Quest, CurrentQuest.Sequence, seq, step,
+                RunOrDefer))
             {
                 if (SimulatedQuest != null)
                 {
@@ -1164,7 +1455,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                     string[] SimSkip = ["Interact", "Action", "Emote", "Craft", "Unmount"];
                     if (repr.Contains('(') && SimSkip.Contains(repr[..repr.IndexOf('(')]) && step != null && step.TargetTerritoryId.Equals(step.TerritoryId))
                     {
-                        _logger.LogInformation($"Skipping {repr} due to simulation");
+                        LogOrDefer(LogLevel.Information, $"Skipping {repr} due to simulation");
                         continue;
                     }
                 }
@@ -1175,8 +1466,13 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         }
         catch(Exception e)
         {
-            _logger.LogError(e, "Failed to create tasks");
-            _chatGui.PrintError("Failed to start next task sequence, please check /xllog for details.", CommandHandler.MessageTag, CommandHandler.TagColor);
+            LogOrDefer(LogLevel.Error, e, "Failed to create tasks");
+            // 這個 catch 從 IPC 端點 Questionable.StartQuest／StartSingleQuest 可達
+            //（QuestionableIpc.StartQuest -> StartSingleQuest -> ExecuteNextStep），而 IPC 跑在
+            // 呼叫端外掛的執行緒上。見 ChatGuiExtensions：在 framework 執行緒上就地執行。
+            RunOrDefer(() => _chatGui.PrintErrorOnFrameworkThread(_framework,
+                "Failed to start next task sequence, please check /xllog for details.", CommandHandler.MessageTag,
+                CommandHandler.TagColor));
             Stop("Tasks failed to create", true);
         }
     }
@@ -1220,6 +1516,31 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     public void Skip(ElementId elementId, byte currentQuestSequence)
     {
+        List<PendingLog> pending = [];
+        List<PendingLog>? previousScope = _deferralScope;
+        _deferralScope = pending;
+        try
+        {
+            SkipLocked(elementId, currentQuestSequence, pending);
+        }
+        finally
+        {
+            _deferralScope = previousScope;
+            EmitPending(pending);
+        }
+    }
+
+    /// <summary><see cref="Skip"/> 持鎖的那一段。</summary>
+    /// <remarks>
+    /// 🔴 這裡面持有 <see cref="_progressLock"/>：要寫的東西用 <c>pending.Add</c> 或
+    /// <see cref="LogOrDefer"/>，要做的副作用用 <see cref="RunOrDefer"/>。
+    /// <para>
+    /// 📌 這個鎖裡呼叫的 <c>Stop</c> 現在也會自己延後——它把 <c>BeginScope</c> 的
+    /// <c>Stop/{label}</c> 前綴一起帶進延後的那一段裡重建，所以輸出的字一個都沒有變。
+    /// </para>
+    /// </remarks>
+    private void SkipLocked(ElementId elementId, byte currentQuestSequence, List<PendingLog> pending)
+    {
         lock(_progressLock)
         {
             if (_taskQueue.CurrentTaskExecutor?.CurrentTask is ISkippableTask)
@@ -1241,13 +1562,13 @@ internal sealed class QuestController : MiniTaskController<QuestController>
                 if (_taskQueue.AllTasksComplete)
                 {
                     Stop("Skip");
-                    IncreaseStepCount(elementId, currentQuestSequence);
+                    IncreaseStepCountLocked(elementId, currentQuestSequence, pending);
                 }
             }
             else
             {
                 Stop("SkipNx");
-                IncreaseStepCount(elementId, currentQuestSequence);
+                IncreaseStepCountLocked(elementId, currentQuestSequence, pending);
             }
         }
     }
@@ -1390,7 +1711,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         catch(Exception e)
         {
             _logger.LogError(e, "Failed to insert quest in priority list");
-            _chatGui.PrintError("Failed to insert quest in priority list, please check /xllog for details.", CommandHandler.MessageTag, CommandHandler.TagColor);
+            // IPC 端點 Questionable.InsertQuestPriority 可達，見 ChatGuiExtensions。
+            _chatGui.PrintErrorOnFrameworkThread(_framework, "Failed to insert quest in priority list, please check /xllog for details.", CommandHandler.MessageTag, CommandHandler.TagColor);
             return false;
         }
     }
@@ -1471,7 +1793,8 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         }
         else
         {
-            _chatGui.PrintError($"No associated quest ({info.QuestId}).", "Questionable");
+            // IPC 端點 Questionable.StartGathering／StartGatheringComplex 可達，見 ChatGuiExtensions。
+            _chatGui.PrintErrorOnFrameworkThread(_framework, $"No associated quest ({info.QuestId}).", "Questionable");
             return false;
         }
     }

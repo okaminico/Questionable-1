@@ -18,7 +18,14 @@ internal sealed class GatheringPointRegistry : IDisposable
 {
     private readonly GatheringData _gatheringData;
 
-    private readonly Dictionary<GatheringPointId, GatheringRoot> _gatheringPoints = [];
+    /// <summary>
+    /// 🔴 <b>刻意不是 <c>readonly</c></b>：<see cref="Reload"/> 改成「在區域集合裡整份建好、
+    /// 最後換一個參照上去」。原本是 <c>Clear()</c> 之後一條一條填回去，而讀取端
+    /// （<c>GatheringController</c>、右鍵選單、日誌視窗）<b>沒有任何一個會跟寫入端上同一把鎖</b>，
+    /// 所以那段期間查表會查到半空的登錄、迭代中的讀取端會擲 <c>InvalidOperationException</c>。
+    /// 換成整份替換之後，讀取端看到的不是舊的就是新的，沒有中間狀態。
+    /// </summary>
+    private Dictionary<GatheringPointId, GatheringRoot> _gatheringPoints = [];
     private readonly ILogger<QuestRegistry> _logger;
     private readonly IDalamudPluginInterface _pluginInterface;
     private readonly QuestRegistry _questRegistry;
@@ -46,16 +53,21 @@ internal sealed class GatheringPointRegistry : IDisposable
         Reload();
     }
 
+    /// <remarks>
+    /// 📌 由 <c>QuestRegistry.Reloaded</c> 觸發時，呼叫端已經把 <c>QuestController._progressLock</c>
+    /// 放掉了 —— 這裡的檔案列舉不會再擋住每一個 framework tick。
+    /// </remarks>
     public void Reload()
     {
-        _gatheringPoints.Clear();
+        Dictionary<GatheringPointId, GatheringRoot> gatheringPoints = [];
 
-        LoadGatheringPointsFromAssembly();
-        LoadGatheringPointsFromProjectDirectory();
+        LoadGatheringPointsFromAssembly(gatheringPoints);
+        LoadGatheringPointsFromProjectDirectory(gatheringPoints);
 
         try
         {
-            LoadFromDirectory(new(Path.Combine(_pluginInterface.ConfigDirectory.FullName, "GatheringPoints")));
+            LoadFromDirectory(gatheringPoints,
+                new(Path.Combine(_pluginInterface.ConfigDirectory.FullName, "GatheringPoints")));
         }
         catch(Exception e)
         {
@@ -63,11 +75,14 @@ internal sealed class GatheringPointRegistry : IDisposable
                 "Failed to load gathering points from user directory (some may have been successfully loaded)");
         }
 
-        _logger.LogInformation("Loaded {Count} gathering points in total", _gatheringPoints.Count);
+        // 整份換上去；在這一行之前，讀取端看到的還是上一份完整的登錄。
+        _gatheringPoints = gatheringPoints;
+
+        _logger.LogInformation("Loaded {Count} gathering points in total", gatheringPoints.Count);
     }
 
     [Conditional("RELEASE")]
-    private void LoadGatheringPointsFromAssembly()
+    private void LoadGatheringPointsFromAssembly(Dictionary<GatheringPointId, GatheringRoot> gatheringPoints)
     {
         _logger.LogInformation("Loading gathering points from assembly");
 
@@ -91,14 +106,14 @@ internal sealed class GatheringPointRegistry : IDisposable
                     break;
                 }
             }
-            _gatheringPoints[new(gatheringPointId)] = gatheringRoot;
+            gatheringPoints[new(gatheringPointId)] = gatheringRoot;
         }
 
-        _logger.LogInformation("Loaded {Count} gathering points from assembly", _gatheringPoints.Count);
+        _logger.LogInformation("Loaded {Count} gathering points from assembly", gatheringPoints.Count);
     }
 
     [Conditional("DEBUG")]
-    private void LoadGatheringPointsFromProjectDirectory()
+    private void LoadGatheringPointsFromProjectDirectory(Dictionary<GatheringPointId, GatheringRoot> gatheringPoints)
     {
         DirectoryInfo? solutionDirectory = _pluginInterface.AssemblyLocation.Directory?.Parent?.Parent;
         if (solutionDirectory != null)
@@ -110,20 +125,20 @@ internal sealed class GatheringPointRegistry : IDisposable
                 {
                     foreach(string expansionFolder in ExpansionData.ExpansionFolders.Values)
                     {
-                        LoadFromDirectory(
+                        LoadFromDirectory(gatheringPoints,
                             new(Path.Combine(pathProjectDirectory.FullName, expansionFolder)));
                     }
                 }
                 catch(Exception e)
                 {
-                    _gatheringPoints.Clear();
+                    gatheringPoints.Clear();
                     _logger.LogError(e, "Failed to load gathering points from project directory");
                 }
             }
         }
     }
 
-    private void LoadGatheringPointFromStream(string fileName, Stream stream)
+    private static void LoadGatheringPointFromStream(Dictionary<GatheringPointId, GatheringRoot> gatheringPoints, string fileName, Stream stream)
     {
         //_logger.LogTrace("Loading gathering point from '{FileName}'", fileName);
         GatheringPointId? gatheringPointId = ExtractGatheringPointIdFromName(fileName);
@@ -150,10 +165,10 @@ internal sealed class GatheringPointRegistry : IDisposable
                 break;
             }
         }
-        _gatheringPoints[gatheringPointId] = gatheringRoot;
+        gatheringPoints[gatheringPointId] = gatheringRoot;
     }
 
-    private void LoadFromDirectory(DirectoryInfo directory)
+    private void LoadFromDirectory(Dictionary<GatheringPointId, GatheringRoot> gatheringPoints, DirectoryInfo directory)
     {
         if (!directory.Exists)
         {
@@ -166,7 +181,7 @@ internal sealed class GatheringPointRegistry : IDisposable
             try
             {
                 using FileStream stream = new(fileInfo.FullName, FileMode.Open, FileAccess.Read);
-                LoadGatheringPointFromStream(fileInfo.Name, stream);
+                LoadGatheringPointFromStream(gatheringPoints, fileInfo.Name, stream);
             }
             catch(Exception e)
             {
@@ -176,7 +191,7 @@ internal sealed class GatheringPointRegistry : IDisposable
 
         foreach(DirectoryInfo childDirectory in directory.GetDirectories())
         {
-            LoadFromDirectory(childDirectory);
+            LoadFromDirectory(gatheringPoints, childDirectory);
         }
     }
 

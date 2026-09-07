@@ -4,6 +4,7 @@ using Questionable.Data;
 using Questionable.Model;
 using Questionable.Model.Questing;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 namespace Questionable.Functions;
@@ -15,6 +16,13 @@ internal sealed class AlliedSocietyQuestFunctions
     private readonly ILogger<AlliedSocietyQuestFunctions> _logger;
     private readonly QuestData _questData;
     private readonly Dictionary<EAlliedSociety, List<NpcData>> _questsByAlliedSociety = [];
+
+    /// <summary>還沒寫出去的記錄，見 <see cref="FlushPendingLogs"/>。</summary>
+    private readonly ConcurrentQueue<(EAlliedSociety Tribe, byte Seed, uint IssuerId, string Quests)> _pendingLogs =
+        new();
+
+    /// <summary>延後清單的上限；正常情況一天只會進幾筆，滿了就不再收。</summary>
+    private const int MaxPendingLogs = 64;
 
     public AlliedSocietyQuestFunctions(QuestData questData, ILogger<AlliedSocietyQuestFunctions> logger)
     {
@@ -85,7 +93,16 @@ internal sealed class AlliedSocietyQuestFunctions
             else
             {
                 List<QuestId> quests = CalculateAvailableQuests(npcData.AllQuests, seed, outranksAll, currentRank, rankedUp);
-                _logger.LogInformation("Available for {Tribe} (Seed: {Seed}, Issuer: {IssuerId}): {Quests}", alliedSociety, seed, npcData.IssuerDataId, string.Join(", ", quests));
+
+                // 🔴 這一支從 QuestController 持著 _progressLock 的路徑可達
+                //    （IsReadyToAcceptQuest -> IsDailyAlliedSocietyQuestAndAvailableToday -> 這裡），
+                //    而 ILogger 最後落到 Serilog sink（自己有鎖、還會做檔案 I/O）。
+                //    這條鏈太深、IsReadyToAcceptQuest 的呼叫端又太多，把 defer 一路傳下去會動到十幾處
+                //    ⇒ 改成先收進佇列，由 DalamudInitializer 每幀在所有鎖外面排乾。
+                if (_pendingLogs.Count < MaxPendingLogs)
+                {
+                    _pendingLogs.Enqueue((alliedSociety, seed, npcData.IssuerDataId, string.Join(", ", quests)));
+                }
 
                 _dailyQuests[key] = quests;
                 result.AddRange(quests);
@@ -94,6 +111,20 @@ internal sealed class AlliedSocietyQuestFunctions
         }
 
         return result;
+    }
+
+    /// <summary>把鎖內攢下來的記錄寫出去。<b>必須在沒有持任何鎖的時候呼叫。</b></summary>
+    /// <remarks>
+    /// 📌 訊息的每一個參數在<b>加進佇列的那一刻</b>就求好值了（包括那個 <c>string.Join</c>），
+    /// 所以延後寫出去的內容與「當場寫」逐字相同。
+    /// </remarks>
+    public void FlushPendingLogs()
+    {
+        while(_pendingLogs.TryDequeue(out (EAlliedSociety Tribe, byte Seed, uint IssuerId, string Quests) entry))
+        {
+            _logger.LogInformation("Available for {Tribe} (Seed: {Seed}, Issuer: {IssuerId}): {Quests}",
+                entry.Tribe, entry.Seed, entry.IssuerId, entry.Quests);
+        }
     }
 
     private static List<QuestId> CalculateAvailableQuests(List<QuestInfo> allQuests, byte seed, bool outranksAll,

@@ -137,6 +137,23 @@ internal sealed class DebugConfigComponent(IDalamudPluginInterface pluginInterfa
         }
 
         ImGui.Separator();
+
+        ImGui.Text("Item Rewards".Loc());
+        using (ImRaii.PushIndent())
+        {
+            bool autoRedeemCoffers = Configuration.Advanced.AutoRedeemCoffers;
+            if (ImGui.Checkbox("Automatically open quest reward coffers".Loc(), ref autoRedeemCoffers))
+            {
+                Configuration.Advanced.AutoRedeemCoffers = autoRedeemCoffers;
+                Save();
+            }
+
+            ImGui.SameLine();
+            ImGuiComponents.HelpMarker(
+                "Quest reward coffers (weapon/armour boxes) have no 'already unlocked' state, so Questionable cannot tell whether you meant to keep one. When enabled, any such coffer sitting in your inventory is opened the next time a quest is accepted. Each stack is only attempted once per run.".Loc());
+        }
+
+        ImGui.Separator();
         ImGui.Text("Quest/Interaction Skips".Loc());
         using (ImRaii.PushIndent())
         {
