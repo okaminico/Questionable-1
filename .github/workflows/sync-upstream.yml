@@ -76,11 +76,18 @@ jobs:
         shell: pwsh
         run: |
           # BuildNumber.txt 是 .gitignore 排除的本機檔案，CI 每次全新 checkout 都會重算成同一個值，
-          # 版本號永遠不會變化，Dalamud 也就永遠不會提示更新。改用 run_number（GitHub 保證每次執行嚴格遞增）
+          # 版本號永遠不會變化，Dalamud 也就永遠不會提示更新。改用 repo.json 目前的 AssemblyVersion
           # 明確蓋掉版本號，跟 release.yml 用 git tag 蓋版本號是同一個道理。
+          #
+          # 🔴 原本這裡是寫死 "7.15.0." 前綴、只拿第4碼+1，跟 release.yml(直接吃 git tag 當完整版號，
+          # 目前是 7.20.0.x)各自維護一套不相關的計數，同一個 AssemblyVersion 欄位被兩套邏輯輪流蓋,
+          # 手動發版之後版號會被這裡的自動同步蓋回 "7.15.0.x"，看起來像版本倒退。
+          # ⇒ 改成延續 repo.json 目前的完整版號(不管上一次是手動發的還是這裡自動發的)，只把最後一碼
+          # +1，前三碼原樣保留——兩套流程從此共用同一條遞增序列，不再互相蓋掉對方。
           $current = (Get-Content -Raw repo.json | ConvertFrom-Json)[0].AssemblyVersion
-          $currentBuild = [int]($current -split '\.')[3]
-          $ver = "7.15.0." + ($currentBuild + 1)
+          $parts = $current -split '\.'
+          $parts[3] = [string]([int]$parts[3] + 1)
+          $ver = $parts -join '.'
           dotnet build --configuration Release Questionable/Questionable.csproj -p:DalamudLibPath="$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\" -p:Version=$ver -p:AssemblyVersion=$ver -p:FileVersion=$ver
           if ($LASTEXITCODE -ne 0) {
             "status=failed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -92,16 +99,27 @@ jobs:
           $json | ConvertTo-Json | Set-Content -Path './Questionable/dist/Questionable/Questionable.json'
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      - name: Rename artifact to Questionable.zip
+        if: steps.merge.outputs.status == 'merged' && steps.build.outputs.status == 'success'
+        shell: pwsh
+        run: |
+          # 跟 release.yml 的手動發版統一資產檔名，下面的 DownloadLink 才能兩邊共用同一條規則。
+          Copy-Item './Questionable/dist/Questionable/latest.zip' -Destination 'Questionable.zip'
+
       - name: Update repo.json
         if: steps.merge.outputs.status == 'merged' && steps.build.outputs.status == 'success'
         shell: pwsh
         run: |
           $ver = "${{ steps.build.outputs.version }}"
-          $tag = "Questionable-v$ver-autosync"
+          # 🔴 原本這裡的 tag 格式是 "Questionable-v$ver-autosync"，跟 release.yml 手動發版用的
+          # 裸 "vX.Y.Z.W" 是兩套不相關的命名，Release 列表會同時混著兩種格式、容易看錯哪個是最新。
+          # ⇒ 版號本身已經改成共用同一條遞增序列(見上面 Build 步驟)，tag 格式也跟著統一成裸版號，
+          # 兩套流程從此是同一條 Release 時間軸，差別只在「誰觸發的」。
+          $tag = "v$ver"
           $json = Get-Content -Raw repo.json | ConvertFrom-Json
           $json[0].AssemblyVersion = $ver
-          $json[0].DownloadLinkInstall = "https://github.com/${{ github.repository }}/releases/download/$tag/latest.zip"
-          $json[0].DownloadLinkUpdate = "https://github.com/${{ github.repository }}/releases/download/$tag/latest.zip"
+          $json[0].DownloadLinkInstall = "https://github.com/${{ github.repository }}/releases/download/$tag/Questionable.zip"
+          $json[0].DownloadLinkUpdate = "https://github.com/${{ github.repository }}/releases/download/$tag/Questionable.zip"
           $json[0].Changelog = "自動合併 ffxiv-tc-port/Questionable 上游更新（$(Get-Date -Format 'yyyy-MM-dd')）。"
           # -AsArray 是必要的：repo.json 只有一個外掛項目時，ConvertTo-Json 預設會把單元素陣列
           # 拆成裸物件（沒有外層 [ ]），Dalamud 的自訂插件庫格式要求最外層必須是陣列，
@@ -124,7 +142,8 @@ jobs:
           name: "Questionable ${{ steps.build.outputs.version }}（自動同步上游）"
           target_commitish: tw-fix
           files: |
-            Questionable/dist/Questionable/latest.zip
+            Questionable.zip
+            Questionable/dist/Questionable/Questionable.json
           generate_release_notes: false
 
       - name: Report unfinished sync
