@@ -179,6 +179,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         _condition.ConditionChange += OnConditionChange;
         _toastGui.Toast += OnNormalToast;
         _toastGui.ErrorToast += OnErrorToast;
+        _clientState.Logout += ClearRedeemAttemptsOnLogout;
     }
 
     public EAutomationType AutomationType
@@ -1400,6 +1401,35 @@ internal sealed class QuestController : MiniTaskController<QuestController>
         ExecuteNextStep();
     }
 
+    /// <summary>
+    /// 登出時清空 <c>RedeemRewardItems</c> 的「已經試過的道具」表。
+    /// </summary>
+    /// <remarks>
+    /// 那張表的鍵只有道具 id，而「用不掉」的理由多半是角色自己的（已經學過那個表情、背包滿、
+    /// 等級不夠）——換角色之後前一個角色的結論不該繼續套用，否則新角色的獎勵道具會安靜地永遠不被使用。
+    /// <para>
+    /// 🔑 這是第二道保險，不是唯一一道：四個 <c>Start*</c> 進入點本來就各清一次，而登出會在
+    /// <see cref="Update"/> 裡走到 <c>StopAllDueToConditionFailed("Logged out")</c> 把自動化停掉，
+    /// 所以正常流程下換完角色一定會再經過一次 <c>Start*</c>。但那個不變式靠的是
+    /// 「以後每一個新的自動化進入點都記得清」，這裡把它釘在真正失效的那一刻。
+    /// </para>
+    /// <para>
+    /// ⚠️ 本 pin 的 <c>IClientState.Logout</c> 是 hook <c>AgentLobby</c> 的 vtable 得來的，
+    /// Setup 當下拿不到 AgentLobby 就整個 session 都不會觸發（Dalamud 自己會記一行）。
+    /// 所以這一條是補強，上面那層 <c>Start*</c> 的清空不要拿掉。
+    /// </para>
+    /// </remarks>
+    private void ClearRedeemAttemptsOnLogout(int type, int code)
+    {
+        int cleared = RedeemRewardItems.ResetAttemptedItems();
+        if (cleared > 0)
+        {
+            _logger.LogInformation(
+                "Logout (type {LogoutType}, code {LogoutCode}): cleared {ClearedRedeemAttempts} attempted reward item(s)",
+                type, code, cleared);
+        }
+    }
+
     private void ExecuteNextStep()
     {
         ClearTasksInternal();
@@ -1801,6 +1831,7 @@ internal sealed class QuestController : MiniTaskController<QuestController>
 
     public override void Dispose()
     {
+        _clientState.Logout -= ClearRedeemAttemptsOnLogout;
         _toastGui.ErrorToast -= OnErrorToast;
         _toastGui.Toast -= OnNormalToast;
         _condition.ConditionChange -= OnConditionChange;

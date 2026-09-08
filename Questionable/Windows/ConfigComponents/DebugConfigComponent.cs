@@ -3,13 +3,23 @@ using Dalamud.Interface.Colors;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
 using ECommons.LanguageHelpers;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 namespace Questionable.Windows.ConfigComponents;
 
-internal sealed class DebugConfigComponent(IDalamudPluginInterface pluginInterface, Configuration configuration) : ConfigComponent(pluginInterface, configuration)
+internal sealed class DebugConfigComponent(
+    IDalamudPluginInterface pluginInterface,
+    Configuration configuration,
+    IDataManager dataManager) : ConfigComponent(pluginInterface, configuration)
 {
+    private List<(uint ItemId, string Name)>? _redeemableItems;
+    private string _blacklistFilter = string.Empty;
+    private uint? _itemToRemove;
+
     public override void DrawTab()
     {
         using var tab = ImRaii.TabItem($"{"Advanced".Loc()}###Debug");
@@ -150,7 +160,9 @@ internal sealed class DebugConfigComponent(IDalamudPluginInterface pluginInterfa
 
             ImGui.SameLine();
             ImGuiComponents.HelpMarker(
-                "Quest reward coffers (weapon/armour boxes) have no 'already unlocked' state, so Questionable cannot tell whether you meant to keep one. When enabled, any such coffer sitting in your inventory is opened the next time a quest is accepted. Each stack is only attempted once per run.".Loc());
+                "Quest reward coffers (weapon/armour boxes) have no 'already unlocked' state, so Questionable cannot tell whether you meant to keep one. That is why this stays off by default: turn it on only once the exclusion list below holds anything you want to keep. When enabled, any such coffer sitting in your inventory is opened the next time a quest is accepted. Each stack is only attempted once per run.".Loc());
+
+            DrawAutoRedeemBlacklist();
         }
 
         ImGui.Separator();
@@ -249,5 +261,132 @@ internal sealed class DebugConfigComponent(IDalamudPluginInterface pluginInterfa
             ImGuiComponents.HelpMarker("When enabled, Questionable will open the path for the current quest in your default text editor.");
 #endif
         }
+    }
+
+    /// <summary>
+    /// 「不自動使用」清單。這張表對所有可兌換道具生效（不只寶箱）：
+    /// 空的時候等於現行行為，什麼都不排除。
+    /// </summary>
+    private void DrawAutoRedeemBlacklist()
+    {
+        HashSet<uint> blacklist = Configuration.Advanced.AutoRedeemItemBlacklist;
+
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Items on this list are never used automatically. Add anything you would rather open yourself."
+                .Loc());
+
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("###AutoRedeemBlacklistFilter",
+            "Search for an item to add to this list...".Loc(), ref _blacklistFilter, 128);
+
+        string filter = _blacklistFilter.Trim();
+        if (filter.Length >= 2)
+        {
+            using var child = ImRaii.Child("###AutoRedeemBlacklistResults", new(0, 120), true);
+            if (child)
+            {
+                int shown = 0;
+                foreach((uint itemId, string name) in GetRedeemableItems())
+                {
+                    if (blacklist.Contains(itemId) ||
+                        name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        continue;
+                    }
+
+                    ++shown;
+                    if (shown > 30)
+                    {
+                        ImGui.TextDisabled("...");
+                        break;
+                    }
+
+                    if (ImGui.Selectable($"{name} ({itemId})###AutoRedeemAdd{itemId}"))
+                    {
+                        blacklist.Add(itemId);
+                        _blacklistFilter = string.Empty;
+                        Save();
+                        break;
+                    }
+                }
+
+                if (shown == 0)
+                {
+                    ImGui.TextDisabled("No matching items.".Loc());
+                }
+            }
+        }
+
+        if (blacklist.Count == 0)
+        {
+            ImGui.TextDisabled("(the list is empty)".Loc());
+            return;
+        }
+
+        foreach(uint itemId in blacklist.OrderBy(x => x))
+        {
+            ImGui.AlignTextToFramePadding();
+            ImGui.Text($"{GetItemName(itemId)} ({itemId})");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"{"Remove".Loc()}###AutoRedeemRemove{itemId}"))
+            {
+                _itemToRemove = itemId;
+            }
+        }
+
+        // 迴圈裡不能動集合，所以移除延到這裡做。
+        if (_itemToRemove is { } removeItemId)
+        {
+            blacklist.Remove(removeItemId);
+            _itemToRemove = null;
+            Save();
+        }
+    }
+
+    /// <summary>查不到名字時顯示灰色的 ?，不要顯示空字串——「不知道」要在列上看得見。</summary>
+    private string GetItemName(uint itemId)
+    {
+        string name = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>()
+            .GetRowOrDefault(itemId)?.Name.ToString() ?? string.Empty;
+        return string.IsNullOrEmpty(name) ? "?" : name;
+    }
+
+    /// <summary>
+    /// 整張道具表裡「Questionable 有辦法自動使用」的那些，第一次用到時建一次就快取起來。
+    /// ⚠️ 這是離線查表（Lumina），不碰遊戲記憶體，所以在繪製執行緒上做是安全的。
+    /// </summary>
+    private List<(uint ItemId, string Name)> GetRedeemableItems()
+    {
+        if (_redeemableItems != null)
+        {
+            return _redeemableItems;
+        }
+
+        List<(uint ItemId, string Name)> items = [];
+        foreach(Lumina.Excel.Sheets.Item item in dataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>())
+        {
+            if (item.RowId == 0)
+            {
+                continue;
+            }
+
+            string name = item.Name.ToString();
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            if (Questionable.Model.ItemReward.CreateFromItem(item,
+                    new Questionable.Model.Questing.QuestId(0)) == null)
+            {
+                continue;
+            }
+
+            items.Add((item.RowId, name));
+        }
+
+        _redeemableItems = items.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
+        return _redeemableItems;
     }
 }

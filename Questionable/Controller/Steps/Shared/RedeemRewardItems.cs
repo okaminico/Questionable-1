@@ -1,6 +1,8 @@
 ﻿using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using Lumina.Excel;
+using Lumina.Excel.Sheets;
 using Questionable.Data;
 using Questionable.Functions;
 using Questionable.Model;
@@ -8,6 +10,8 @@ using Questionable.Model.Questing;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+// Lumina.Excel.Sheets 也有一個 Quest，不下別名整個檔的 Quest 引用會變成模糊。
+using Quest = Questionable.Model.Quest;
 namespace Questionable.Controller.Steps.Shared;
 
 internal static class RedeemRewardItems
@@ -28,13 +32,25 @@ internal static class RedeemRewardItems
     private static readonly ConcurrentDictionary<uint, int> AttemptedItems = new();
 
     /// <summary>開始一輪新的自動化時清空，讓使用者「重新跑一次」等於「再試一次」。</summary>
-    internal static void ResetAttemptedItems() => AttemptedItems.Clear();
+    /// <remarks>
+    /// 登出時也會清一次（<c>QuestController.ClearRedeemAttemptsOnLogout</c>）：這張表的鍵只有道具 id，
+    /// 而「用不掉」的理由多半是角色自己的（已經學過那個表情、背包滿、等級不夠），
+    /// 換角色之後前一個角色的結論不該繼續套用在新角色身上。
+    /// </remarks>
+    /// <returns>清掉的筆數。</returns>
+    internal static int ResetAttemptedItems()
+    {
+        int cleared = AttemptedItems.Count;
+        AttemptedItems.Clear();
+        return cleared;
+    }
 
     /// <summary>記下這一疊已經動過手了。只有寶箱會呼叫。</summary>
     internal static void RecordAttempt(uint itemId, int countBeforeUse) =>
         AttemptedItems[itemId] = countBeforeUse;
 
-    internal sealed class Factory(QuestData questData, Configuration configuration) : ITaskFactory
+    internal sealed class Factory(QuestData questData, Configuration configuration, IDataManager dataManager)
+        : ITaskFactory
     {
         public IEnumerable<ITask> CreateAllTasks(Quest quest, QuestSequence sequence, QuestStep step)
         {
@@ -44,6 +60,7 @@ internal static class RedeemRewardItems
             }
 
             List<ITask> tasks = [];
+            HashSet<uint> blacklist = configuration.Advanced.AutoRedeemItemBlacklist;
             unsafe
             {
                 InventoryManager* inventoryManager = InventoryManager.Instance();
@@ -52,12 +69,69 @@ internal static class RedeemRewardItems
                     return tasks;
                 }
 
+                // 候選＝任務獎勵表 ∪ 背包裡本身就可兌換的道具。
+                // 用道具 id 當鍵去重：ItemReward 是 record，但它包的 ItemRewardDetails
+                // 是一般類別（參考相等），所以 record 自帶的相等性擋不掉重複。
+                Dictionary<uint, ItemReward> candidates = [];
                 foreach(ItemReward itemReward in questData.RedeemableItems)
                 {
+                    candidates.TryAdd(itemReward.ItemId, itemReward);
+                }
+
+                // 全背包掃描：任務獎勵表只涵蓋「有任務把它列為獎勵」的道具，
+                // 從別處拿到的坐騎笛、寶箱、表情教材都不在裡面。
+                // 只在 AcceptQuest 那一步跑一次，不是每幀。
+                ExcelSheet<Item> itemSheet = dataManager.GetExcelSheet<Item>();
+                for(InventoryType inventoryType = InventoryType.Inventory1;
+                    inventoryType <= InventoryType.Inventory4;
+                    ++inventoryType)
+                {
+                    InventoryContainer* container = inventoryManager->GetInventoryContainer(inventoryType);
+                    if (container == null)
+                    {
+                        continue;
+                    }
+
+                    for(int i = 0; i < container->Size; ++i)
+                    {
+                        InventoryItem* slot = container->GetInventorySlot(i);
+                        if (slot == null || slot->ItemId == 0)
+                        {
+                            continue;
+                        }
+
+                        uint itemId = slot->ItemId;
+                        if (candidates.ContainsKey(itemId) || blacklist.Contains(itemId))
+                        {
+                            continue;
+                        }
+
+                        if (itemSheet.GetRowOrDefault(itemId) is not { } item)
+                        {
+                            continue;
+                        }
+
+                        // ⚠️ 這件不是從任務獎勵表來的，沒有對應的任務；
+                        // ElementId 只用於介面顯示，這裡放 QuestId(0) 當佔位，不要拿它去查任務。
+                        if (ItemReward.CreateFromItem(item, new QuestId(0)) is { } redeemable)
+                        {
+                            candidates.Add(itemId, redeemable);
+                        }
+                    }
+                }
+
+                foreach(ItemReward itemReward in candidates.Values)
+                {
+                    // 黑名單：使用者明確說「這件不要自動用」。所有型別都適用，不只寶箱。
+                    if (blacklist.Contains(itemReward.ItemId))
+                    {
+                        continue;
+                    }
+
                     bool isCoffer = itemReward.Type is EItemRewardType.Coffer;
 
-                    // 預設關：本 fork 沒有上游那個黑名單，開了就沒辦法排除想留著的箱子。
-                    // 關著的時候連背包都不用查（台服符合條件的寶箱有 236 件）。
+                    // 預設關：寶箱沒有「已解鎖」狀態，開了就分辨不出哪一個是使用者想留的。
+                    // （台服符合條件的寶箱有 236 件）
                     if (isCoffer && !configuration.Advanced.AutoRedeemCoffers)
                     {
                         continue;

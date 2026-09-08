@@ -145,6 +145,12 @@ internal sealed class Configuration : IPluginConfiguration
         /// 任務獎勵寶箱有 236 件。要開請使用者自己在設定頁勾。
         /// </remarks>
         public bool AutoRedeemCoffers { get; set; }
+
+        /// <summary>
+        /// 不自動使用的道具 id。對所有可兌換道具生效，不只是寶箱。
+        /// 空集合（預設）等於現行行為：什麼都不排除。
+        /// </summary>
+        public HashSet<uint> AutoRedeemItemBlacklist { get; set; } = [];
     }
 
     internal enum EGearsetUpdateSource
