@@ -1,5 +1,9 @@
 name: Release
 
+# 手動發版，版號直接吃 tag(vX.Y.Z.W)。跟 sync-upstream.yml 共用同一套版號規則：
+# X.Y 跟 TC 一致(目前 7.20)；Z 是 sync-upstream.yml 自己的同步代數，每次自動同步+1；
+# W 是本地修正計數，同一個 Z 上手動發版一次就 +1，下一次自動同步時會被歸零。
+# ⇒ 手動發版前看 repo.json 目前的 AssemblyVersion，X.Y.Z 照抄、W 手動 +1 再打 tag。
 on:
   workflow_dispatch:
 permissions:

@@ -245,12 +245,16 @@ internal static class Interact
             else if (ProgressContext != null)
             {
                 logger.LogDebug("Entered ProgressContext");
-                if (ProgressContext.WasInterrupted())
-                {
-                    return ETaskResult.StillRunning;
-                }
-                else if (ProgressContext.WasSuccessful() ||
-                         _interactionState == EInteractionState.InteractionConfirmed)
+                // 🔴 原本是先問 ProgressContext.WasInterrupted()，true 就直接 return，
+                // 下面 _interactionState == InteractionConfirmed 那個分支永遠排不到——
+                // 而這個互動本身會觸發進入單人任務副本，那段讀條欄位借來的判斷卡死在
+                // "true" 的話，_continueAt 永遠不會被推進，Update() 每一幀都從頭跑一遍，
+                // 卻永遠到不了真正的完成判定，變成無限迴圈(跟 WasInterrupted() override
+                // 修的是同一個根因，這裡是另一條沒被那個修正擋到的路徑)。
+                // ⇒ 已經透過 OccupiedInEvent 旗標確認成功時，優先判完成，不要讓那套
+                // 讀條偵測卡住往下走。
+                if (_interactionState == EInteractionState.InteractionConfirmed ||
+                    ProgressContext.WasSuccessful())
                 {
                     if (delayedFinalCheck)
                     {
@@ -259,6 +263,10 @@ internal static class Interact
 
                     _continueAt = DateTime.Now.AddSeconds(0.2);
                     delayedFinalCheck = true;
+                    return ETaskResult.StillRunning;
+                }
+                else if (ProgressContext.WasInterrupted())
+                {
                     return ETaskResult.StillRunning;
                 }
             }
