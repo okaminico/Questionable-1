@@ -159,24 +159,6 @@ internal static class Interact
         public Quest? Quest => Task.Quest;
         public EInteractionType InteractionType { get; set; }
 
-        // 🔴 MiniTaskController 每一幀都會先呼叫這個(在 Update() 之前),判斷「這個任務是不是被打斷了」。
-        // 基底實作(TaskExecutor<T>.WasInterrupted)借用的是 ProgressContext 那套本來設計給「真的在
-        // 使用招式卻被擊退/擊倒打斷」的讀條欄位(ActionManager 的 CastTimeElapsed/CastTimeTotal)。
-        // 套在單純的物件互動上本來就勉強,遇到這種互動本身會觸發進入單人任務副本
-        // (OccupiedInEvent 短暫 True→False)的情況更容易被那套讀條邏輯誤判成「被打斷」——
-        // 而這時 _interactionState 早已經在 OnConditionChange 裡被標成 InteractionConfirmed,
-        // 下一輪 Update() 原本就會正常判定完成。誤判搶在那之前打斷整個任務佇列,QuestController
-        // 的復原邏輯又會把這一步的 MoveTo+Interact 整套重排回去,導致在同一個互動物件前
-        // 不斷重複「走過去、互動、被誤判打斷、重排、再走過去」——卡在互動物件前原地跑步。
-        // ⇒ 已經透過 OccupiedInEvent 旗標確認互動成功時,不要再讓這套借來的讀條偵測蓋過去。
-        public override bool WasInterrupted()
-        {
-            if (_interactionState == EInteractionState.InteractionConfirmed)
-                return false;
-
-            return base.WasInterrupted();
-        }
-
         public override ETaskResult Update()
         {
             logger.LogDebug($"Entered Update, _continueAt: {_continueAt}");
@@ -245,16 +227,12 @@ internal static class Interact
             else if (ProgressContext != null)
             {
                 logger.LogDebug("Entered ProgressContext");
-                // 🔴 原本是先問 ProgressContext.WasInterrupted()，true 就直接 return，
-                // 下面 _interactionState == InteractionConfirmed 那個分支永遠排不到——
-                // 而這個互動本身會觸發進入單人任務副本，那段讀條欄位借來的判斷卡死在
-                // "true" 的話，_continueAt 永遠不會被推進，Update() 每一幀都從頭跑一遍，
-                // 卻永遠到不了真正的完成判定，變成無限迴圈(跟 WasInterrupted() override
-                // 修的是同一個根因，這裡是另一條沒被那個修正擋到的路徑)。
-                // ⇒ 已經透過 OccupiedInEvent 旗標確認成功時，優先判完成，不要讓那套
-                // 讀條偵測卡住往下走。
-                if (_interactionState == EInteractionState.InteractionConfirmed ||
-                    ProgressContext.WasSuccessful())
+                if (ProgressContext.WasInterrupted())
+                {
+                    return ETaskResult.StillRunning;
+                }
+                else if (ProgressContext.WasSuccessful() ||
+                         _interactionState == EInteractionState.InteractionConfirmed)
                 {
                     if (delayedFinalCheck)
                     {
@@ -263,10 +241,6 @@ internal static class Interact
 
                     _continueAt = DateTime.Now.AddSeconds(0.2);
                     delayedFinalCheck = true;
-                    return ETaskResult.StillRunning;
-                }
-                else if (ProgressContext.WasInterrupted())
-                {
                     return ETaskResult.StillRunning;
                 }
             }

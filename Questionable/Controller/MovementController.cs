@@ -47,6 +47,12 @@ internal sealed class MovementController
     private CancellationTokenSource? _cancellationTokenSource;
     private Task<List<Vector3>>? _pathfindTask;
 
+    /// <summary>
+    /// 水平距離已經進到 <see cref="DestinationData.StopDistance"/> 以內、但垂直距離檢查一直不通過的
+    /// 起算時間。<see langword="null"/> 代表目前不在這個狀態。見 <see cref="Update"/> 裡的說明。
+    /// </summary>
+    private DateTime? _verticalStopCheckStuckSince;
+
     public bool IsNavmeshReady
     {
         get
@@ -262,6 +268,31 @@ internal sealed class MovementController
                             DefaultVerticalInteractionDistance)
                         {
                             Stop();
+                        }
+                        else
+                        {
+                            // 🔴 水平距離已經進到 StopDistance 以內，但垂直距離檢查一直不過時，這裡原本
+                            // 什麼都不做：Destination 就這樣一直留著不清掉，IsPathRunning 也一直是
+                            // true。外層 RecalculateNavmesh 的「卡住幾次就放棄」上限(NavmeshCalculations
+                            // < 10)靠的是同一個 Destination 物件累計次數，但 Restart() 每次都透過
+                            // PrepareNavigation 建一個全新的 DestinationData，次數跟著歸零——等於那個
+                            // 上限形同虛設，會在同一個點附近無限期重算/重新下達移動指令。
+                            // 如果這個目標剛好是某個互動任務觸發的事件(例如互動本身會開始一段不能被
+                            // 移動打斷的讀條)，每隔幾秒被迫動一下就會把那段讀條打斷——卡在互動物件前
+                            // 原地跑步的其中一種成因。
+                            // ⇒ 這裡加一個跟 NavmeshCalculations 無關、獨立計時的逾時：水平已經到了，
+                            // 垂直卻一直卡著超過 MovementStuckGraceSeconds，就直接放棄等垂直對齊、
+                            // 停止移動。寧可把「沒有真的對齊完成」交回呼叫端(任務本身的完成判定/
+                            // 重試邏輯)處理，也不要讓移動租約永遠不清、每隔幾秒逼角色動一次。
+                            _verticalStopCheckStuckSince ??= DateTime.Now;
+                            if (DateTime.Now - _verticalStopCheckStuckSince >=
+                                TimeSpan.FromSeconds(configuration.General.MovementStuckGraceSeconds))
+                            {
+                                logger.LogWarning(
+                                    "Within horizontal stop distance of {DataId} but vertical check never passed; giving up and stopping movement",
+                                    Destination.DataId);
+                                Stop();
+                            }
                         }
                     }
                     else if (gameObject is { ObjectKind: ObjectKind.Aetheryte })
@@ -588,6 +619,10 @@ internal sealed class MovementController
 
         // 我們已經決定停下來了 ⇒ 快照當場歸零，不必等下一幀重新取樣。
         _pathRunningSnapshot = false;
+
+        // 跟上面同一批狀態一起清：不清的話，下一次完全不相關的移動請求如果剛好又卡在
+        // 同一個「水平到了、垂直沒過」的分支，會沿用這次殘留的起算時間，逾時判斷提早觸發。
+        _verticalStopCheckStuckSince = null;
 
         if (InputManager.IsAutoRunning())
         {
